@@ -1,6 +1,6 @@
 # Harness Session Manager
 
-One terminal command center for Claude Code, OpenCode, Pi, and external harness plugins. HSM combines live session status, a unified workspace tree, persistent organization, rich session context, and safe management actions.
+One terminal command center for Claude Code, OpenCode, Pi, and external harness plugins. HSM combines live session status, a unified workspace tree, new-session launching, persistent organization, rich session context, and safe management actions.
 
 ## Install
 
@@ -46,6 +46,7 @@ sessions
 | `?` | Show the complete keyboard reference |
 | `1` / `2` | Dashboard and Browser views |
 | `Ctrl+K` | Fuzzy command palette for sessions and actions |
+| `n` | Launch a new harness session in a selected working folder |
 | `f` / `Tab` | Cycle All, Claude Code, OpenCode, and Pi filters |
 | `j` / `k` | Move selection |
 | `/` | Search every normalized field across harnesses |
@@ -71,7 +72,7 @@ Claude Code is read and managed through `@anthropic-ai/claude-agent-sdk`. OpenCo
 
 Pi sessions are discovered from `PI_CODING_AGENT_SESSION_DIR`, the configured Pi `sessionDir`, or `~/.pi/agent/sessions`. HSM supports Pi previews, names, models, usage/cost, forks, resume commands, Git context, process state, and lifecycle events.
 
-Harness integrations are registry plugins. Drop an external `.mjs` adapter into `~/.config/hsm/plugins/` or use `HSM_PLUGINS`; see [Harness plugins](docs/harness-plugins.md). Adding a built-in harness requires one adapter module and one registry descriptor, without changes to the dashboard, browser, search, palette, persistence, or status engine.
+Harness integrations are registry plugins. Drop an external `.mjs` adapter into `~/.config/hsm/plugins/` or use `HSM_PLUGINS`; see [Harness plugins](docs/harness-plugins.md). Adding a built-in harness requires one adapter module and one registry descriptor, without changes to the dashboard, browser, search, palette, persistence, or status engine. Adapters opt into the new-session launcher by declaring their executable and arguments.
 
 HSM-owned pins, aliases, tags, notes, hidden state, UI state, lifecycle events, and undo records live under `~/.local/state/hsm/`. OpenCode archive and move operations create a database backup before mutation. Delete remains disabled unless an adapter can provide session-scoped recovery.
 

@@ -14,6 +14,7 @@ export default {
     return {
       id: 'my-harness',
       name: 'My Harness',
+      newSession: {command: 'my-harness', args: []},
       available() {
         return true;
       },
@@ -54,6 +55,8 @@ Restart HSM. Files ending in `.js` or `.mjs` are discovered automatically. Addit
 ```
 
 Optional normalized fields include `branch`, `tag`, `parentId`, `model`, `agent`, `cost`, `tokens`, `git`, and `raw`. Capability methods such as `rename(session, title)`, `tag`, `archive`, `restore`, and `move` are exposed only when supported.
+
+`newSession` is an optional adapter-level declaration. When present, HSM automatically includes the harness in the `n` launcher and command palette. `command` is the native executable and `args` contains any arguments required to begin a fresh interactive session; HSM supplies the user-selected working directory.
 
 An adapter may also expose `processes()` to return normalized `{harness, sessionId, pid, cwd}` records when its process model cannot be covered by HSM's built-in detector. A harness-specific extension or hook can report live state through `hsm event --harness <id> --session <id> --type running|waiting|completed|failed`.
 

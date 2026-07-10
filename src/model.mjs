@@ -35,6 +35,8 @@ export class SessionHubModel {
     this.paletteIndex = 0;
     this.paletteMessage = '';
     this.help = false;
+    this.launcher = false;
+    this.launcherIndex = 0;
     this.promptKind = 'search';
     this.pendingAction = null;
     this.status = 'Discovering sessions…';
@@ -88,6 +90,7 @@ export class SessionHubModel {
 
   async key(key) {
     if (this.help) { if (key === '?' || key === 'esc' || key === 'q' || key === 'ctrl+c') this.help = false; return; }
+    if (this.launcher) return this.launcherKey(key);
     if (this.palette) return this.paletteKey(key);
     if (this.prompt) return this.promptKey(key);
     if (key === 'q' || key === 'ctrl+c') return 'quit';
@@ -95,6 +98,7 @@ export class SessionHubModel {
     else if (key === '1') this.setView('dashboard');
     else if (key === '2') this.setView('browser');
     else if (key === 'ctrl+k') this.openPalette();
+    else if (key === 'n') this.openLauncher();
     else if (key === 'tab' || key === 'f') this.cycleSource();
     else if (key === 'j' || key === 'down') this.move(1);
     else if (key === 'k' || key === 'up') this.move(-1);
@@ -125,7 +129,7 @@ export class SessionHubModel {
       this.prompt = false;
       const value = this.promptValue.trim();
       if (this.promptKind === 'search') { this.query = value; this.store.setUi({query: value}); this.selectedSession = 0; this.preview = []; this.recompute(); this.status = value ? `Filter: ${value}` : 'Filter cleared'; }
-      else await this.completePrompt(value);
+      else return this.completePrompt(value);
       return;
     }
     if (key === 'backspace') this.promptValue = this.promptValue.slice(0, -1);
@@ -243,7 +247,7 @@ export class SessionHubModel {
     const session = this.selected();
     const selectReason = 'Select a session row first';
     const actions = [
-      action('subagents', this.showSubagents ? 'Hide subagent threads' : 'Show subagent threads', true), action('continue', 'Continue where I left off', Boolean(this.continueSession())), action('resume', 'Resume session', Boolean(session), selectReason), action('pin', session?.local.pinned ? 'Unpin session' : 'Pin session', Boolean(session), selectReason),
+      action('new-session', 'New session…', this.launchableAdapters().length > 0, 'No installed harness declares new-session support'), action('subagents', this.showSubagents ? 'Hide subagent threads' : 'Show subagent threads', true), action('continue', 'Continue where I left off', Boolean(this.continueSession())), action('resume', 'Resume session', Boolean(session), selectReason), action('pin', session?.local.pinned ? 'Unpin session' : 'Pin session', Boolean(session), selectReason),
       action('alias', 'Set local alias', Boolean(session), selectReason), action('tag', 'Set session tag', Boolean(session), selectReason), action('note', 'Add note', Boolean(session), selectReason), action('copy', 'Copy resume command', Boolean(session), selectReason),
       action('folder', 'Open working folder', Boolean(session?.cwd), session ? 'Session has no working folder' : selectReason), action('editor', 'Open in editor', Boolean(session?.cwd), session ? 'Session has no working folder' : selectReason),
       action('rename', 'Rename session', Boolean(session?.capabilities?.rename), session ? 'Harness does not support rename' : selectReason), action('move', 'Move to OpenCode project', Boolean(session?.capabilities?.move), session ? 'Only OpenCode sessions can move projects' : selectReason), action('archive', 'Archive session', Boolean(session?.capabilities?.archive), session ? 'Local hide is available instead' : selectReason),
@@ -257,6 +261,7 @@ export class SessionHubModel {
   async runPaletteAction(item) {
     this.palette = false;
     if (item.session) { this.setView('browser'); this.query = item.session.id; this.recompute(); return; }
+    if (item.id === 'new-session') return this.openLauncher();
     if (item.id === 'continue') return this.openSession(this.continueSession());
     if (item.id === 'subagents') return this.toggleSubagents();
     if (item.id === 'resume') return this.openSelected();
@@ -271,6 +276,7 @@ export class SessionHubModel {
     if (item.id === 'folder' || item.id === 'editor') return this.openPath(item.id);
   }
   async completePrompt(value) {
+    if (this.promptKind === 'new-session') return this.launchNewSession(this.pendingAction, value);
     const session = this.selected(); if (!session) return;
     const adapter = this.adapters.find((item) => item.id === session.harness);
     if (this.promptKind === 'alias' || this.promptKind === 'note') { this.store.updateSession(sessionKey(session), {[this.promptKind]: value}); session.local[this.promptKind] = value; this.recordAction(session, `${this.promptKind}-updated`); this.status = `Saved local ${this.promptKind}`; return; }
@@ -302,6 +308,11 @@ export class SessionHubModel {
   recordAction(session, type, message = '') { const event = this.store.appendEvent({harness: session.harness, sessionId: session.id, type, timestamp: Date.now(), cwd: session.cwd, message}); this.events.unshift(event); }
   continueSession() { return [...this.sessions].filter((session) => this.showSubagents || !session.isSubagent).sort((a, b) => Number(b.local.lastOpenedAt || 0) - Number(a.local.lastOpenedAt || 0) || b.updatedAt - a.updatedAt)[0] || null; }
   openSession(session) { return session ? this.launchSession(session) : undefined; }
+  launchableAdapters() { return this.adapters.filter((adapter) => adapter.available() && adapter.newSession?.command); }
+  openLauncher() { this.palette = false; this.launcher = true; this.launcherIndex = 0; this.status = 'Choose a harness for the new session'; }
+  launcherKey(key) { const adapters = this.launchableAdapters(); if (key === 'esc' || key === 'ctrl+c') { this.launcher = false; return; } if (key === 'up' || key === 'k') this.launcherIndex = clamp(this.launcherIndex - 1, 0, Math.max(0, adapters.length - 1)); else if (key === 'down' || key === 'j') this.launcherIndex = clamp(this.launcherIndex + 1, 0, Math.max(0, adapters.length - 1)); else if (key === 'enter') { const adapter = adapters[this.launcherIndex]; if (!adapter) return; this.launcher = false; this.prompt = true; this.promptKind = 'new-session'; this.pendingAction = adapter.id; this.promptValue = this.defaultLaunchCwd(); } }
+  defaultLaunchCwd() { const row = this.selectedRow(); if (row?.session?.cwd) return row.session.cwd; if (row?.type === 'folder' && row.key !== 'Unknown folder') return row.key; return process.cwd(); }
+  launchNewSession(harness, cwdValue) { const adapter = this.adapters.find((item) => item.id === harness); if (!adapter?.newSession) throw new Error(`Harness cannot create sessions: ${harness}`); const cwd = String(cwdValue || '').replace(/^~(?=\/|$)/, process.env.HOME || ''); if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) { this.status = `Working directory does not exist: ${cwd}`; return; } const launch = adapter.newSession; this.pendingAction = null; if (this.openMode === 'tty') return {type: 'open', command: launch.command, args: [...(launch.args || [])], cwd}; const [terminal, ...terminalArgs] = (process.env.TERMINAL || 'xdg-terminal-exec').split(/\s+/); const child = spawn(terminal, [...terminalArgs, launch.command, ...(launch.args || [])], {cwd, detached: true, stdio: 'ignore'}); child.unref(); this.status = `Started a new ${adapter.name} session in ${cwd}`; }
 }
 
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }

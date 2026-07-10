@@ -9,6 +9,7 @@ export class PiAdapter {
   constructor({agentDir = DEFAULT_PI_DIR, sessionDir = process.env.PI_CODING_AGENT_SESSION_DIR} = {}) {
     this.id = 'pi';
     this.name = 'Pi';
+    this.newSession = {command: 'pi', args: []};
     this.agentDir = agentDir;
     this.sessionDir = sessionDir || readConfiguredSessionDir(agentDir) || path.join(agentDir, 'sessions');
   }

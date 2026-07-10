@@ -3,6 +3,7 @@ import {SessionHubModel} from './model.mjs';
 
 export function render(model) {
   if (model.help) return renderHelp(model);
+  if (model.launcher) return renderLauncher(model);
   if (model.palette) return renderPalette(model);
   if (model.prompt) return box([promptTitle(model), '', `  › ${model.promptValue}`, '', model.promptKind === 'confirm' ? '  Type yes and press Enter · Esc cancels' : '  Enter apply · Esc cancel'], Math.min(78, model.width), ' input ', true).join('\n');
   const width = Math.max(76, model.width);
@@ -22,7 +23,7 @@ export function render(model) {
   return [fit(headerLeft + ' '.repeat(Math.max(1, width - headerLeft.length - headerRight.length)) + headerRight, width), '─'.repeat(width), ...body,
     fit(` ${contextLine(model)}`, width),
     fit(` ${model.status}`, width),
-    fit(' 1/2 views   j/k move   Enter inspect   Ctrl+K actions   / search   o resume   ? all keys   q quit', width)].join('\n');
+    fit(' 1/2 views   j/k move   Enter inspect   n new session   Ctrl+K actions   / search   ? all keys   q quit', width)].join('\n');
 }
 
 function renderHelp(model) {
@@ -34,7 +35,8 @@ function renderHelp(model) {
     '',
     '  SESSION & FOLDERS',
     '  Enter Expand/inspect    ←/→ Collapse/expand',
-    '  v Preview    o Resume    h Show resume command',
+    '  n New session    v Preview    o Resume',
+    '  h Show resume command',
     '  p Pin/unpin    u Undo latest supported action',
     '',
     '  FILTERS & ACTIONS',
@@ -47,6 +49,19 @@ function renderHelp(model) {
     '  Press ?, Esc, or q to close',
   ];
   return box(lines, width, ' keyboard reference ', true).join('\n');
+}
+
+function renderLauncher(model) {
+  const width = Math.min(76, Math.max(56, model.width - 18));
+  const adapters = model.launchableAdapters();
+  const lines = ['  Choose the coding harness to start.', '  The next step lets you edit the working directory.', ''];
+  for (const [index, adapter] of adapters.entries()) {
+    const launch = adapter.newSession;
+    lines.push(fit(`${index === model.launcherIndex ? '❯' : ' '} ${badge(adapter.id)} ${adapter.name}   ${launch.command} ${(launch.args || []).join(' ')}`, width - 2));
+  }
+  if (!adapters.length) lines.push('  No installed harness supports creating a new session.');
+  lines.push('', '  ↑/↓ or j/k move · Enter continue · Esc cancel');
+  return box(lines, width, ' new session ', true).join('\n');
 }
 
 function dashboardLines(model, width, height) {
@@ -275,7 +290,7 @@ function renderPalette(model) {
   lines.push('', '  Type to filter · ↑/↓ move · Enter run · Esc close');
   return box(lines, width, ' command palette ', true).join('\n');
 }
-function promptTitle(model) { return model.promptKind === 'search' ? 'SEARCH SESSIONS' : model.promptKind === 'confirm' ? `CONFIRM ${String(model.pendingAction || '').toUpperCase()}` : `${model.promptKind.toUpperCase()} SESSION`; }
+function promptTitle(model) { if (model.promptKind === 'new-session') { const adapter = model.adapters.find((item) => item.id === model.pendingAction); return `NEW ${String(adapter?.name || model.pendingAction).toUpperCase()} SESSION · WORKING DIRECTORY`; } return model.promptKind === 'search' ? 'SEARCH SESSIONS' : model.promptKind === 'confirm' ? `CONFIRM ${String(model.pendingAction || '').toUpperCase()}` : `${model.promptKind.toUpperCase()} SESSION`; }
 function commandCenterSessionLine(session, active, width, indent = '') { const lead = `${active ? '❯' : ' '} ${indent}${statusGlyph(session)} ${badge(session.harness)} ${session.local.alias || session.title}`; const right = `◷ ${age(session.updatedAt)}  ⌂ ${fit(session.project || 'unknown', 15)}`; const gap = width - lead.length - right.length; return fit(gap >= 2 ? `${lead}${' '.repeat(gap)}${right}` : `${lead}  ${right}`, width); }
 function statusGlyph(session) { if (session.local?.pinned) return '★'; return {running: '●', waiting: '◆', completed: '✓', failed: '!', stale: '○', offline: '○'}[session.status] || '○'; }
 function laneGlyph(lane) { return {waiting: '◆', running: '●', 'needs attention': '!', pinned: '★', recent: '◷'}[lane] || '·'; }

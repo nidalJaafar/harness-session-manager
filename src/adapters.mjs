@@ -10,6 +10,7 @@ export class ClaudeAdapter {
   constructor({sdk = {listSessions, getSessionMessages, renameSession, tagSession}, limit = 300} = {}) {
     this.id = 'claude';
     this.name = 'Claude Code';
+    this.newSession = {command: 'claude', args: []};
     this.sdk = sdk;
     this.limit = limit;
   }
@@ -57,6 +58,7 @@ export class OpenCodeAdapter {
   constructor({dbPath = DEFAULT_OPENCODE_DB, sql = defaultSql} = {}) {
     this.id = 'opencode';
     this.name = 'OpenCode';
+    this.newSession = {command: 'opencode', args: []};
     this.dbPath = dbPath;
     this.sql = sql;
   }

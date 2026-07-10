@@ -11,7 +11,7 @@ import {ensureHooksInstalled} from '../src/cli.mjs';
 function fixture() {
   return {id: 's1', harness: 'claude', harnessName: 'Claude Code', title: 'Fix login', project: 'api', cwd: process.cwd(), updatedAt: Date.now(), resume: {command: 'claude', args: ['--resume', 's1']}, capabilities: {rename: true, preview: true}, git: {branch: 'main', dirty: true, files: 2}};
 }
-function adapter(rows) { return {id: 'claude', name: 'Claude Code', available: () => true, sessions: async () => rows, preview: async () => [{role: 'user', text: 'fix it'}, {role: 'assistant', text: 'done'}], rename: async () => {}}; }
+function adapter(rows) { return {id: 'claude', name: 'Claude Code', available: () => true, newSession: {command: 'claude', args: []}, sessions: async () => rows, preview: async () => [{role: 'user', text: 'fix it'}, {role: 'assistant', text: 'done'}], rename: async () => {}}; }
 function setup() { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hsm-command-')); const store = new StateStore({dir}); return {dir, store}; }
 
 test('state persists metadata, UI state, events, and undo records', () => {
@@ -189,4 +189,27 @@ test('question mark opens complete keyboard help and escape closes it', async ()
   assert.equal(model.help, true);
   await model.key('esc');
   assert.equal(model.help, false);
+});
+
+test('new-session launcher chooses a harness and defaults to the selected project', async () => {
+  const {store} = setup();
+  const model = new SessionHubModel({adapters: [adapter([fixture()])], store, processScanner: () => [], openMode: 'tty'});
+  await model.load();
+  model.selectedSession = model.rows().findIndex((row) => row.type === 'session');
+  await model.key('n');
+  assert.equal(model.launcher, true);
+  await model.key('enter');
+  assert.equal(model.promptKind, 'new-session');
+  assert.equal(model.promptValue, process.cwd());
+  const result = await model.key('enter');
+  assert.deepEqual(result, {type: 'open', command: 'claude', args: [], cwd: process.cwd()});
+});
+
+test('new-session launcher rejects a missing working directory', async () => {
+  const {store} = setup();
+  const model = new SessionHubModel({adapters: [adapter([])], store, processScanner: () => [], openMode: 'tty'});
+  await model.load();
+  model.prompt = true; model.promptKind = 'new-session'; model.pendingAction = 'claude'; model.promptValue = '/definitely/not/a/real/hsm/path';
+  assert.equal(await model.key('enter'), undefined);
+  assert.match(model.status, /Working directory does not exist/);
 });
