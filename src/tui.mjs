@@ -168,7 +168,8 @@ export async function run(model) {
   root.add(screen); renderer.root.add(root);
   const redraw = () => { model.width = renderer.width || 120; model.height = renderer.height || 36; screen.content = styled(render(model), StyledText, colors); renderer.requestRender(); };
   renderer.keyInput.on('keypress', (event) => void (async () => { const result = await model.key(normalize(event)); if (result === 'quit') return renderer.destroy(); if (result?.type === 'open') { renderer.destroy(); const child = spawnSync(result.command, result.args, {cwd: result.cwd, stdio: 'inherit'}); process.exit(child.status ?? 1); } redraw(); })());
-  const liveTimer = setInterval(() => { model.refreshLive(); redraw(); }, 2000);
+  let refreshPending = false;
+  const liveTimer = setInterval(() => { if (refreshPending) return; refreshPending = true; void model.refreshLive().then(redraw).finally(() => { refreshPending = false; }); }, 2000);
   renderer.on('destroy', () => clearInterval(liveTimer));
   renderer.on('resize', redraw); redraw(); renderer.start();
 }

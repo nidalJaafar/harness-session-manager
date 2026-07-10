@@ -39,6 +39,7 @@ export class SessionHubModel {
     this.launcherIndex = 0;
     this.promptKind = 'search';
     this.pendingAction = null;
+    this.lastDiscoveryRefresh = 0;
     this.status = 'Discovering sessions…';
   }
 
@@ -74,8 +75,22 @@ export class SessionHubModel {
     return processes.filter((process) => { const key = `${process.harness}:${process.pid}:${process.sessionId || ''}`; if (seen.has(key)) return false; seen.add(key); return true; });
   }
 
-  refreshLive() {
+  async refreshLive(now = Date.now()) {
     this.events = this.store.events();
+    const known = new Set(this.sessions.map((session) => sessionKey(session)));
+    const hasNewActiveSession = this.events.some((event) => now - event.timestamp < ACTIVE_DISCOVERY_WINDOW && ['started', 'running', 'waiting', 'heartbeat', 'tool', 'notification'].includes(event.type) && !known.has(sessionKey(event.harness, event.sessionId)));
+    if (hasNewActiveSession && now - this.lastDiscoveryRefresh >= DISCOVERY_RETRY_INTERVAL) {
+      this.lastDiscoveryRefresh = now;
+      const selected = this.selected();
+      const selectedKey = selected ? sessionKey(selected) : '';
+      await this.load();
+      if (selectedKey) {
+        const index = this.rows().findIndex((row) => row.session && sessionKey(row.session) === selectedKey);
+        if (index >= 0) this.selectedSession = index;
+      }
+      this.status = `Discovered new session · ${this.status}`;
+      return;
+    }
     this.sessions = applyLiveState(this.sessions, this.events, this.safeProcesses());
     this.recompute();
   }
@@ -316,6 +331,8 @@ export class SessionHubModel {
 }
 
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
+const ACTIVE_DISCOVERY_WINDOW = 5 * 60 * 1000;
+const DISCOVERY_RETRY_INTERVAL = 5 * 1000;
 function mergeMetadata(session, local) { const git = session.git || {}; return {...session, title: local.alias || session.title, branch: session.branch || git.branch || '', local: {pinned: false, alias: '', note: '', hidden: false, ...local}, status: STATUS.OFFLINE, statusUpdatedAt: session.updatedAt}; }
 function action(id, label, enabled, reason = '') { return {id, label, enabled, reason}; }
 function fuzzy(value, query) { let index = 0; for (const character of value) if (character === query[index]) index += 1; return index === query.length; }

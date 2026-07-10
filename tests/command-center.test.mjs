@@ -213,3 +213,19 @@ test('new-session launcher rejects a missing working directory', async () => {
   assert.equal(await model.key('enter'), undefined);
   assert.match(model.status, /Working directory does not exist/);
 });
+
+test('live refresh discovers a Claude session created after HSM starts', async () => {
+  const {store} = setup();
+  const rows = [];
+  const model = new SessionHubModel({adapters: [adapter(rows)], store, processScanner: () => [{harness: 'claude', sessionId: '', pid: 42, cwd: process.cwd()}]});
+  await model.load();
+  assert.equal(model.sessions.length, 0);
+  const created = {...fixture(), id: 'created-while-open'};
+  rows.push(created);
+  const now = Date.now();
+  store.appendEvent({harness: 'claude', sessionId: created.id, type: 'started', timestamp: now, pid: 42, cwd: created.cwd});
+  await model.refreshLive(now);
+  assert.equal(model.sessions.length, 1);
+  assert.equal(model.sessions[0].id, created.id);
+  assert.equal(model.sessions[0].status, 'running');
+});
