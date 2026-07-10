@@ -1,0 +1,62 @@
+# Harness plugins
+
+HSM treats every coding harness as a plugin. The model, dashboard, browser, search, palette, persistence, status engine, and TUI only consume normalized adapters.
+
+## External plugin
+
+Create `~/.config/hsm/plugins/my-harness.mjs`:
+
+```js
+export default {
+  id: 'my-harness',
+  name: 'My Harness',
+  create(context) {
+    return {
+      id: 'my-harness',
+      name: 'My Harness',
+      available() {
+        return true;
+      },
+      async sessions() {
+        return [];
+      },
+      async preview(session) {
+        return [];
+      },
+    };
+  },
+};
+```
+
+Restart HSM. Files ending in `.js` or `.mjs` are discovered automatically. Additional plugin files can be supplied through the platform-delimited `HSM_PLUGINS` environment variable.
+
+## Normalized session
+
+`sessions()` returns objects with these core fields:
+
+```js
+{
+  id: 'native-id',
+  harness: 'my-harness',
+  harnessName: 'My Harness',
+  title: 'Session title',
+  project: 'repo-name',
+  cwd: '/absolute/repo/path',
+  updatedAt: Date.now(),
+  createdAt: Date.now(),
+  isSubagent: false,
+  resume: {command: 'my-harness', args: ['--resume', 'native-id']},
+  capabilities: {
+    rename: false, tag: false, archive: false, delete: false,
+    move: false, preview: true, cost: false, git: false, liveEvents: false,
+  },
+}
+```
+
+Optional normalized fields include `branch`, `tag`, `parentId`, `model`, `agent`, `cost`, `tokens`, `git`, and `raw`. Capability methods such as `rename(session, title)`, `tag`, `archive`, `restore`, and `move` are exposed only when supported.
+
+An adapter may also expose `processes()` to return normalized `{harness, sessionId, pid, cwd}` records when its process model cannot be covered by HSM's built-in detector. A harness-specific extension or hook can report live state through `hsm event --harness <id> --session <id> --type running|waiting|completed|failed`.
+
+`preview()` returns chronological `{role: 'user' | 'assistant', text: '...'}` messages.
+
+Built-in integrations are declared in `src/harnesses/index.mjs`. Adding another built-in requires an adapter module and one descriptor in `builtinHarnesses`; no model or UI edits are required. Unknown harnesses receive a neutral badge until a custom badge style is added.
