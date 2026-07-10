@@ -1,115 +1,206 @@
 # Harness Session Manager
 
-One terminal command center for Claude Code, OpenCode, Pi, and external harness plugins. HSM combines live session status, a unified workspace tree, new-session launching, persistent organization, rich session context, and safe management actions.
+HSM is a local command center for Claude Code, OpenCode, Pi, and external harness plugins. It combines live attention state, project/worktree orchestration, private transcript search, persistent organization, and safe session management in one TUI.
 
 ## Install
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/nidalJaafar/harness-session-manager/master/scripts/install-from-url.sh)"
-```
-
-Then run:
-
-```bash
 hsm doctor
 hsm
 ```
 
 See [INSTALL.md](INSTALL.md) for requirements, updates, uninstalling, and agent-oriented installation.
 
-## Development
+## What HSM does
 
-Requirements: Node 20+, Bun (OpenTUI runtime), and `sqlite3` for OpenCode discovery.
+| Area | Features |
+| --- | --- |
+| Unified sessions | Claude Code, OpenCode, Pi, and external adapters in one normalized queue |
+| Live attention | Running/waiting/failed/stale detection, snoozing, pins, and optional notifications |
+| Project cockpit | Collapsible project trees, Git context, branches, worktrees, launch profiles, and harness counts |
+| Session control | Start, resume, preview, rename, tag, note, alias, archive, move, hide, and undo where supported |
+| Local intelligence | Private transcript indexing, faceted search, highlighted matches, related sessions, and optional AI retrieval |
+| Orchestration | Confirmed worktree operations and multi-harness tmux profiles with generic-terminal fallback |
+| Extensibility | Capability-driven harness plugins without dashboard or TUI changes |
 
-```bash
-npm install
-npm start
-```
+Unsupported native actions remain visible but disabled with an explanation. HSM uses local aliases, tags, and notes when a harness has no equivalent native feature.
 
-For a non-interactive snapshot:
+## Command Center
 
-```bash
-npm run preview
-```
+- `1 Dashboard` shows Waiting, Running, Pinned, Snoozed, and Recent lanes.
+- `2 Projects` groups sessions into collapsible project cockpits with active-session, branch, worktree, dirty-worktree, and profile signals.
+- `/ Session Finder` searches locally indexed transcripts from either view. Use facets such as `harness:claude`, `project:api`, `branch:main`, and `role:user`. Once Finder displays local results, `Shift+A` becomes available for AI ranking.
 
-Alternatively, install the `sessions` and `hsm` commands globally from a development checkout:
+Search is progressive and globally accessible. Press `/` from either view for immediate local retrieval. If the results are insufficient, press `Shift+A` inside Finder to rank the same query with AI. `Shift+A` is intentionally inactive outside Finder.
 
-```bash
-npm install -g .
-sessions
-```
+Session status glyphs are consistent across views:
 
-## Controls
+| Glyph | Meaning |
+| --- | --- |
+| `●` | Harness is running work |
+| `◆` | Session is waiting for input |
+| `✓` | Session completed or stopped |
+| `!` | Session failed or its working directory is missing |
+| `○` | Session is offline or stale |
+| `★` | Session is pinned |
+
+Project rows use readable counters such as `2 active · 3 branches · 4 worktrees · 1 profile`. Select a project to see the same data with its full path and harness breakdown.
+
+Press `Ctrl+K` for every supported action or `?` for the complete keyboard reference.
 
 | Key | Action |
 | --- | --- |
-| `?` | Show the complete keyboard reference |
-| `1` / `2` | Dashboard and Browser views |
-| `Ctrl+K` | Fuzzy command palette for sessions and actions |
-| `n` | Launch a new harness session in a selected working folder |
-| `f` / `Tab` | Cycle All, Claude Code, OpenCode, and Pi filters |
+| `1` / `2` | Dashboard and Projects |
 | `j` / `k` | Move selection |
-| `/` | Search every normalized field across harnesses |
-| `g` | Toggle folder-grouped queue and global recent activity |
-| `Enter` | Expand/collapse a folder, or preview a selected session |
-| `←` / `→` | Collapse or expand the selected folder |
-| `v` | Load a lightweight transcript preview for a session |
-| `o` | Resume using the selected harness’s native command |
-| `p` | Pin or unpin the selected session |
-| `s` | Show or hide subagent/child threads; hidden by default |
+| `/` | Open the global Finder with local transcript retrieval |
+| `Enter` / `v` | Expand a project or preview a session |
+| `n` / `o` | Start a new session or resume the selected session |
+| `z` / `w` | Snooze for one hour or wake a session |
+| `l` | Go to the latest session resumed through HSM |
+| `A` in Finder | Toggle AI ranking and local retrieval; inactive elsewhere |
+| `Esc` in Finder | Return to the previous Dashboard or Projects view |
+| `p` / `s` | Pin a session or show hidden subagent threads |
+| `f` / `Tab` | Cycle harness filters |
 | `u` | Undo the latest supported management action |
-| `h` | Show the exact native resume command |
-| `r` | Rescan every source |
-| `q` | Quit |
+| `r` / `q` | Rescan or quit |
 
-Set `HSM_OPEN_MODE=tty` to replace the current TUI with the selected harness. By default a new terminal is launched using `$TERMINAL` or `xdg-terminal-exec`.
+The palette includes session search, latest-session navigation, profile creation/running, worktree inspection/creation, snooze controls, resume/copy/open actions, local metadata, supported native mutations, and session hiding. Worktree creation shows a preview and requires typing `yes`.
 
-## Architecture
+Subagent and child threads are hidden by default. Press `s`, use the palette, set `HSM_SHOW_SUBAGENTS=1`, or pass `--show-subagents` to include them; the TUI preference is persisted.
 
-The interface follows the two-pane pattern of the original managers: the folder/session browser owns the wide left pane, while stable folder or session details appear on the right. The queue is grouped by working folder by default, and every folder begins collapsed. Expand a folder to reveal a tree of sessions from any registered harness. Folders are ordered by their latest session activity, while sessions inside each folder remain newest-first. The TUI consumes only the normalized harness contract. Each adapter owns discovery, preview, capabilities, and its native resume command.
+## Live state and lifecycle integrations
 
-Claude Code is read and managed through `@anthropic-ai/claude-agent-sdk`. OpenCode is read from `~/.local/share/opencode/opencode.db`; use `--db path` to override it. Adapter capabilities ensure unsupported actions are disabled with an explanation.
+On the first interactive launch, HSM installs lifecycle integrations for detected harnesses:
 
-Pi sessions are discovered from `PI_CODING_AGENT_SESSION_DIR`, the configured Pi `sessionDir`, or `~/.pi/agent/sessions`. HSM supports Pi previews, names, models, usage/cost, forks, resume commands, Git context, process state, and lifecycle events.
+- Claude Code hooks for session start/end, prompts, tools, failures, notifications, and stop events.
+- An OpenCode plugin for session, idle, error, and tool events.
+- A Pi extension for session and agent lifecycle events.
 
-Harness integrations are registry plugins. Drop an external `.mjs` adapter into `~/.config/hsm/plugins/` or use `HSM_PLUGINS`; see [Harness plugins](docs/harness-plugins.md). Adding a built-in harness requires one adapter module and one registry descriptor, without changes to the dashboard, browser, search, palette, persistence, or status engine. Adapters opt into the new-session launcher by declaring their executable and arguments.
-
-HSM-owned pins, aliases, tags, notes, hidden state, UI state, lifecycle events, and undo records live under `~/.local/state/hsm/`. OpenCode archive and move operations create a database backup before mutation. Delete remains disabled unless an adapter can provide session-scoped recovery.
-
-Subagent threads are hidden throughout Dashboard, Browser, search, and the command palette by default. Press `s`, use the palette action, set `HSM_SHOW_SUBAGENTS=1`, or launch with `--show-subagents` to include them. The preference changed with `s` is persisted.
-
-## Live status
-
-HSM automatically installs its lifecycle integrations on the first interactive launch. Existing Claude settings, the OpenCode plugin, and the Pi extension are backed up before modification.
-
-Check or repair the integrations manually with:
+HSM combines these events with process detection every two seconds. New sessions created while HSM is already open are discovered automatically. A missing process or heartbeat makes an active session stale instead of incorrectly marking it complete.
 
 ```bash
 hsm hooks status
 hsm hooks install
-```
-
-Claude hooks, the OpenCode plugin, and the Pi extension report normalized Running, Waiting, Completed, and Failed events. HSM combines those events with process detection every two seconds. If a running session loses its process or heartbeat, it becomes Stale instead of being marked complete.
-
-Remove integrations without deleting HSM state:
-
-```bash
 hsm hooks remove
 ```
 
-If you intentionally do not want automatic hook installation, launch with `HSM_DISABLE_AUTO_HOOKS=1`.
+Set `HSM_DISABLE_AUTO_HOOKS=1` when hook installation should remain manual. Existing harness configuration is backed up before HSM modifies it.
 
-## Management
+## Background attention monitor
 
-Open `Ctrl+K` to resume, continue the last session, pin, alias, tag, add notes, copy the resume command, open the folder/editor, rename, move an OpenCode session, archive, or hide. Destructive actions require typing `yes`; unsupported native operations are visibly disabled. `u` restores the latest supported rename, move, archive, or hide operation.
+The TUI works without a daemon. Optionally install a systemd user service that records/indexes sessions and sends deduplicated desktop notifications when a session is waiting or failed:
 
-## Diagnostics
+```bash
+hsm daemon install
+hsm daemon status
+```
+
+Snooze state suppresses notifications for the selected session for one hour. The daemon is optional: hooks continue recording events and the TUI remains fully functional without it. Remove it with `hsm daemon remove`.
+
+## Profiles and worktrees
+
+Profiles are local, versioned recipes stored in HSM's state database. They can launch multiple harnesses in tmux panes, with ordinary terminal windows as fallback. Environment values are removed from exported recipes.
+
+```bash
+hsm profile create --root "$PWD" --name api --tmux \
+  --launches '[{"command":"claude"},{"command":"opencode","cwd":"services/api"}]'
+hsm profile list
+hsm profile run api
+hsm profile duplicate api --name 'API experiment'
+hsm profile export api --output api.hsm.json
+hsm profile import api.hsm.json          # preview only
+hsm profile import api.hsm.json --yes    # confirmed import
+```
+
+Edit a profile by exporting it, changing the JSON, and applying it explicitly:
+
+```bash
+hsm profile edit api --file api.hsm.json
+```
+
+A profile can define a project root, preferred base branch, commands, arguments, working subdirectories, environment values, and a tmux layout. Profile configuration is local by default and never writes into a repository automatically.
+
+Worktree inspection reports branch, HEAD, detached, missing, merged, and dirty state. Mutation commands return a preview unless `--yes` is supplied. Dirty or actively used worktrees are never removed:
+
+```bash
+hsm worktree inspect --root "$PWD"
+hsm worktree create --root "$PWD" --target ../feature --branch feature
+hsm worktree create --root "$PWD" --target ../feature --branch feature --yes
+hsm worktree cleanup --root "$PWD" --target ../feature
+```
+
+## Private local search
+
+HSM stores normalized metadata, events, profiles, undo records, notification state, and indexed messages in `~/.local/state/hsm/hsm.db`. Existing JSON/JSONL state is migrated once and backed up before import.
+
+```bash
+hsm search 'token refresh harness:claude role:assistant'
+hsm index status
+hsm index pause
+hsm index resume
+hsm index exclude /path/to/private/project
+hsm index delete claude:session-id
+hsm index rebuild
+```
+
+FTS5 is used when the system SQLite provides it; otherwise HSM uses a compatible local lexical-search backend. Results include highlighted snippets and referenced paths, and session details suggest related threads using project, branch, working-directory, and lexical signals.
+
+### AI-assisted session retrieval
+
+When local results are not enough, `A` runs an explicit RAG fallback:
+
+1. HSM scores indexed messages locally and groups the best evidence by session.
+2. Obvious API keys, tokens, passwords, and secrets are redacted.
+3. Only the top 20 candidate sessions and short evidence excerpts are sent to the provider.
+4. The provider must select existing session keys; invented IDs are discarded.
+5. HSM displays confidence, reasoning, evidence, project context, and a direct resume action. Press `A` again to return to local results.
+
+Claude Code is selected automatically when available, followed by Pi. Both run ephemerally without tools or session persistence. Claude also runs without user/project setting sources and with empty hooks, so retrieval does not create a Claude session or HSM lifecycle events. OpenCode is not selected automatically because its non-interactive mode persists a session.
+
+```bash
+hsm ai status
+hsm ai provider claude   # or: pi
+hsm ai find 'where did we fix the token refresh race?'
+```
+
+Local search never invokes AI. Transcript content leaves the machine only when you explicitly press `A` or run `hsm ai find`; provider usage may incur its normal cost. Excluded projects are never candidates.
+
+Claude retrieval calls default to a `$0.25` maximum budget. Override it when needed:
+
+```bash
+HSM_AI_MAX_BUDGET_USD=0.50 hsm
+```
+
+Excluded projects are removed from the existing index as well as skipped during future indexing. `hsm index delete` removes only HSM's indexed copy; it does not delete the native harness session.
+
+## State, migration, and safety
+
+HSM 1.0 consolidates its state in `~/.local/state/hsm/hsm.db` using SQLite WAL mode. It stores:
+
+- Pins, aliases, tags, notes, hidden state, and snooze deadlines.
+- UI selections, folder expansion, filters, and the latest resumed session.
+- Normalized lifecycle events, notification deduplication, profiles, transcript indexes, and undo records.
+
+Legacy `state.json`, `events.jsonl`, and undo records are imported once. HSM retains `.pre-sqlite-backup` copies so an interrupted or unwanted migration is recoverable.
+
+Archive and move operations create native backups when the adapter supports them. Destructive actions require confirmation, and `u` restores the latest supported rename, move, archive, or hide action. Native delete stays disabled unless an adapter can provide session-scoped recovery.
+
+## Harness plugins
+
+Drop an `.mjs` adapter into `~/.config/hsm/plugins/` or use `HSM_PLUGINS`. Existing adapters remain compatible. Optional `messagesSince`, `projectIdentity`, `prepareLaunch`, process, cost, Git, mutation, and lifecycle capabilities progressively enhance the command center. See [Harness plugins](docs/harness-plugins.md).
+
+## Diagnostics and development
 
 ```bash
 hsm doctor
+hsm --preview
+npm install
+npm test
+npm start
 ```
 
-Doctor checks harness executables, Bun, SQLite, the OpenCode database and integrity, hook/plugin/extension installation, running harness processes, and the local event store.
+Doctor checks harness executables, Bun, SQLite and the OpenCode database, HSM database integrity/search backend, lifecycle integrations, the optional daemon, notifications, tmux, and process state. Set `HSM_OPEN_MODE=tty` to replace HSM with the selected harness; otherwise HSM launches a new terminal through `$TERMINAL` or `xdg-terminal-exec`.
 
 ## CLI
 
@@ -117,5 +208,11 @@ Doctor checks harness executables, Bun, SQLite, the OpenCode database and integr
 hsm [--preview] [--db path] [--only claude|opencode|pi]
 hsm event --harness <id> --session <id> --type <type>
 hsm hooks install|remove|status
+hsm daemon install|remove|start|stop|status
+hsm profile list|create|edit|duplicate|export|import|run
+hsm worktree inspect|create|cleanup
+hsm index status|rebuild|pause|resume|exclude|delete
+hsm search <query>
+hsm ai status|provider <claude|pi>|find <query>
 hsm doctor
 ```

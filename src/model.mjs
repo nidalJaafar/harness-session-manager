@@ -3,6 +3,9 @@ import {execFileSync, spawn} from 'node:child_process';
 import {loadAll} from './adapters.mjs';
 import {applyLiveState, scanHarnessProcesses, STATUS} from './live.mjs';
 import {StateStore, sessionKey} from './state.mjs';
+import {IntelligenceIndex} from './intelligence.mjs';
+import {ProjectProfiles, WorktreeManager} from './projects.mjs';
+import {RagLocator} from './rag.mjs';
 
 export class SessionHubModel {
   constructor({adapters = [], openMode = process.env.HSM_OPEN_MODE || 'terminal', store = new StateStore(), processScanner = scanHarnessProcesses, showSubagents = undefined} = {}) {
@@ -10,13 +13,19 @@ export class SessionHubModel {
     this.openMode = openMode;
     this.store = store;
     this.processScanner = processScanner;
+    this.index = new IntelligenceIndex(store);
+    this.profiles = new ProjectProfiles(store);
+    this.worktrees = new WorktreeManager();
+    this.rag = new RagLocator(this.index);
     this.width = 120;
     this.height = 36;
     this.focus = 'sessions';
     this.source = this.store.state.ui?.source || 'all';
-    this.query = this.store.state.ui?.query || '';
+    this.query = '';
     this.showSubagents = showSubagents ?? (process.env.HSM_SHOW_SUBAGENTS == null ? this.store.state.ui?.showSubagents ?? false : process.env.HSM_SHOW_SUBAGENTS === '1');
-    this.view = ['dashboard', 'browser'].includes(this.store.state.ui?.view) ? this.store.state.ui.view : 'dashboard';
+    this.view = ['dashboard', 'projects'].includes(this.store.state.ui?.view) ? this.store.state.ui.view : this.store.state.ui?.view === 'browser' ? 'projects' : 'dashboard';
+    this.finderReturnView = this.view;
+    this.finderReturnQuery = this.query;
     this.viewMode = 'folders';
     this.sessions = [];
     this.sources = [];
@@ -29,6 +38,12 @@ export class SessionHubModel {
     this.prompt = false;
     this.promptValue = '';
     this.preview = [];
+    this.searchResults = [];
+    this.aiResults = [];
+    this.searchMode = 'local';
+    this.finderPromptMode = 'local';
+    this.aiProvider = '';
+    this.projectSummaries = new Map();
     this.events = [];
     this.palette = false;
     this.paletteQuery = '';
@@ -49,6 +64,9 @@ export class SessionHubModel {
     const processes = this.safeProcesses();
     this.sessions = applyLiveState(data.sessions.map((session) => mergeMetadata(session, this.store.metadata(sessionKey(session)))), this.events, processes)
       .filter((session) => !session.local.hidden);
+    this.indexWarning = '';
+    try { await this.index.indexSessions(this.sessions, this.adapters); } catch (error) { this.indexWarning = `Index deferred: ${shortError(error)}`; }
+    this.refreshProjectSummaries();
     if (!this.collapseInitialized) {
       const expanded = new Set(this.store.state.ui?.expandedFolders || []);
       for (const session of this.sessions) if (!expanded.has(folderKey(session))) this.collapsedFolders.add(folderKey(session));
@@ -61,7 +79,7 @@ export class SessionHubModel {
     const restoredSelection = this.store.state.ui?.selections?.[this.view];
     this.selectedSession = Number.isInteger(restoredSelection) ? clamp(restoredSelection, 0, Math.max(0, this.rows().length - 1)) : Math.max(0, this.rows().findIndex((row) => row.type === 'session'));
     const errors = data.sources.filter((source) => source.error);
-    this.status = errors.length ? `Loaded ${this.sessions.length} sessions · ${errors.map((source) => `${source.name}: ${source.error}`).join(' · ')}` : `Synced ${this.sessions.length} sessions across ${data.sources.filter((source) => source.available).length} harnesses`;
+    this.status = errors.length ? `Loaded ${this.sessions.length} sessions · ${errors.map((source) => `${source.name}: ${source.error}`).join(' · ')}` : `Synced ${this.sessions.length} sessions across ${data.sources.filter((source) => source.available).length} harnesses${this.indexWarning ? ` · ${this.indexWarning}` : ''}`;
   }
 
   safeProcesses() {
@@ -111,7 +129,8 @@ export class SessionHubModel {
     if (key === 'q' || key === 'ctrl+c') return 'quit';
     if (key === '?') this.help = true;
     else if (key === '1') this.setView('dashboard');
-    else if (key === '2') this.setView('browser');
+    else if (key === '2') this.setView('projects');
+    else if (key === 'A' && this.view === 'search') await this.openGlobalSessionFinder('ai');
     else if (key === 'ctrl+k') this.openPalette();
     else if (key === 'n') this.openLauncher();
     else if (key === 'tab' || key === 'f') this.cycleSource();
@@ -119,7 +138,7 @@ export class SessionHubModel {
     else if (key === 'k' || key === 'up') this.move(-1);
     else if (key === 'pageup') this.move(-10);
     else if (key === 'pagedown') this.move(10);
-    else if (key === '/') { this.prompt = true; this.promptKind = 'search'; this.promptValue = this.query; }
+    else if (key === '/') { if(this.view==='search'){this.prompt=true;this.promptKind='search';this.promptValue=this.query;this.finderPromptMode='local';}else this.openSessionFinder(true,'local'); }
     else if (key === 'r') await this.load();
     else if (key === 'g') { this.viewMode = this.viewMode === 'folders' ? 'recent' : 'folders'; this.selectedSession = 0; this.scroll = 0; this.preview = []; this.recompute(); this.status = this.viewMode === 'folders' ? 'Grouped by working folder' : 'Showing global recent activity'; }
     else if (key === 'enter') {
@@ -132,9 +151,13 @@ export class SessionHubModel {
     else if (key === 'left' && this.selectedRow()?.type === 'folder') this.collapseSelectedFolder();
     else if (key === 'o') return this.openSelected();
     else if (key === 'p') this.togglePin();
+    else if (key === 'z') this.snoozeSelected(60 * 60 * 1000);
+    else if (key === 'w') this.wakeSelected();
+    else if (key === 'l') this.returnToLatestSession();
     else if (key === 's') this.toggleSubagents();
     else if (key === 'u') await this.undoLatest();
     else if (key === 'h') this.status = this.commandHint();
+    else if (key === 'esc' && this.view === 'search') this.closeSessionFinder();
     else if (key === 'esc' && this.preview.length) { this.preview = []; this.status = 'Preview closed'; }
   }
 
@@ -143,7 +166,7 @@ export class SessionHubModel {
     if (key === 'enter') {
       this.prompt = false;
       const value = this.promptValue.trim();
-      if (this.promptKind === 'search') { this.query = value; this.store.setUi({query: value}); this.selectedSession = 0; this.preview = []; this.recompute(); this.status = value ? `Filter: ${value}` : 'Filter cleared'; }
+      if (this.promptKind === 'search') { this.query = value; this.store.setUi({finderQuery: value}); this.selectedSession = 0; this.preview = []; this.runLocalSearch(); this.status = value ? `Local results: ${value}` : 'Finder query cleared'; if(value&&this.finderPromptMode==='ai'){this.finderPromptMode='local';return this.askAiToLocate();}this.finderPromptMode='local'; }
       else return this.completePrompt(value);
       return;
     }
@@ -198,6 +221,7 @@ export class SessionHubModel {
   launchSession(session) {
     const cwd = session.cwd && fs.existsSync(session.cwd) ? session.cwd : process.cwd();
     this.store.updateSession(sessionKey(session), {lastOpenedAt: Date.now()});
+    this.store.setUi({latestSession: sessionKey(session)});
     if (this.openMode === 'tty') return {type: 'open', ...session.resume, cwd};
     const [terminal, ...terminalArgs] = (process.env.TERMINAL || 'xdg-terminal-exec').split(/\s+/);
     const child = spawn(terminal, [...terminalArgs, session.resume.command, ...session.resume.args], {cwd, detached: true, stdio: 'ignore'});
@@ -216,23 +240,25 @@ export class SessionHubModel {
     }
     const rows = [];
     for (const group of groups.values()) {
-      rows.push({type: 'folder', key: group.key, sessions: group.sessions, collapsed: this.collapsedFolders.has(group.key)});
+      rows.push({type: 'folder', key: group.key, sessions: group.sessions, summary: this.projectSummaries.get(group.key), collapsed: this.collapsedFolders.has(group.key)});
       if (!this.collapsedFolders.has(group.key)) rows.push(...group.sessions.map((session, index) => ({type: 'session', session, folder: group.key, isLast: index === group.sessions.length - 1})));
     }
     return rows;
   }
 
   rows() {
-    if (this.view === 'browser') return this.queueRows();
+    if (this.view === 'projects') return this.queueRows();
+    if (this.view === 'search') { const results=this.searchMode==='ai'?this.aiResults:this.searchResults;return results.map((result) => ({type: this.searchMode==='ai'?'ai-search':'search', result, session: this.sessions.find((session) => sessionKey(session) === result.sessionKey)})); }
     return this.dashboardRows();
   }
 
   dashboardRows() {
     const pinned = this.filtered.filter((session) => session.local.pinned);
     const lanes = [
-      ['waiting', this.filtered.filter((session) => session.status === STATUS.WAITING)],
+      ['waiting', this.filtered.filter((session) => session.status === STATUS.WAITING && Number(session.local.snoozedUntil || 0) <= Date.now())],
       ['running', this.filtered.filter((session) => session.status === STATUS.RUNNING)],
       ['pinned', pinned],
+      ['snoozed', this.filtered.filter((session) => Number(session.local.snoozedUntil || 0) > Date.now())],
       ['recent', this.filtered.filter((session) => !pinned.includes(session)).sort((a, b) => Number(b.local.lastOpenedAt || 0) - Number(a.local.lastOpenedAt || 0) || b.updatedAt - a.updatedAt).slice(0, 12)],
     ];
     const rows = [];
@@ -251,18 +277,23 @@ export class SessionHubModel {
   commandHint() { const s = this.selected(); return s ? `${s.resume.command} ${s.resume.args.join(' ')}` : 'No session selected'; }
   ensureVisible() { const rows = Math.max(2, Math.floor((this.height - 14) / 2)); if (this.selectedSession < this.scroll) this.scroll = this.selectedSession; if (this.selectedSession >= this.scroll + rows) this.scroll = this.selectedSession - rows + 1; }
 
-  setView(view) { this.view = view; this.selectedSession = Number(this.store.state.ui?.selections?.[view] || 0); this.scroll = 0; this.preview = []; this.store.setUi({view}); this.recompute(); this.status = `${view[0].toUpperCase()}${view.slice(1)} view`; }
+  setView(view) { view = view === 'browser' ? 'projects' : view; if(view==='search')return this.openSessionFinder(false);this.view = view; this.selectedSession = Number(this.store.state.ui?.selections?.[view] || 0); this.scroll = 0; this.preview = []; this.store.setUi({view}); this.recompute(); this.status = `${view[0].toUpperCase()}${view.slice(1)} view`; }
   toggleLane(lane) { const key = `lane:${lane}`; if (this.collapsedFolders.has(key)) this.collapsedFolders.delete(key); else this.collapsedFolders.add(key); this.status = `${this.collapsedFolders.has(key) ? 'Collapsed' : 'Expanded'} ${lane}`; }
   persistExpanded() { const expanded = [...new Set(this.sessions.map(folderKey))].filter((key) => !this.collapsedFolders.has(key)); this.store.setUi({expandedFolders: expanded}); }
   persistSelection() { const selections = {...this.store.state.ui?.selections, [this.view]: this.selectedSession}; this.store.setUi({selections}); }
   togglePin() { const session = this.selected(); if (!session) return; const pinned = !session.local.pinned; this.store.updateSession(sessionKey(session), {pinned}); session.local.pinned = pinned; this.recordAction(session, pinned ? 'pinned' : 'unpinned'); this.recompute(); this.status = `${pinned ? 'Pinned' : 'Unpinned'} ${session.title}`; }
+  snoozeSelected(duration) { const session = this.selected(); if (!session) return; const until = Date.now() + duration; this.store.updateSession(sessionKey(session), {snoozedUntil: until}); session.local.snoozedUntil = until; this.recompute(); this.status = `Snoozed until ${new Date(until).toLocaleTimeString()}`; }
+  wakeSelected() { const session = this.selected(); if (!session) return; this.store.updateSession(sessionKey(session), {snoozedUntil: 0}); session.local.snoozedUntil = 0; this.recompute(); this.status = `Woke ${session.title}`; }
+  returnToLatestSession() { const key = this.store.state.ui?.latestSession || this.store.state.ui?.mission; const session = this.sessions.find((item) => sessionKey(item) === key); if (!session) { this.status = 'No latest session is available'; return; } this.setView('projects'); this.query = session.id; this.collapsedFolders.delete(folderKey(session)); this.recompute(); this.selectedSession = this.rows().findIndex((row) => row.session?.id === session.id); this.persistSelection(); this.status = `Selected latest session · ${session.title}`; }
   toggleSubagents() { this.showSubagents = !this.showSubagents; this.store.setUi({showSubagents: this.showSubagents}); this.selectedSession = 0; this.scroll = 0; this.preview = []; this.recompute(); this.status = `${this.showSubagents ? 'Showing' : 'Hiding'} subagent threads`; }
   openPalette() { this.palette = true; this.paletteQuery = ''; this.paletteIndex = 0; this.paletteMessage = ''; }
   paletteItems() {
     const session = this.selected();
+    const root = this.selectedProjectRoot();
+    const profiles = root ? this.profiles.list(root) : [];
     const selectReason = 'Select a session row first';
     const actions = [
-      action('new-session', 'New session…', this.launchableAdapters().length > 0, 'No installed harness declares new-session support'), action('subagents', this.showSubagents ? 'Hide subagent threads' : 'Show subagent threads', true), action('continue', 'Continue where I left off', Boolean(this.continueSession())), action('resume', 'Resume session', Boolean(session), selectReason), action('pin', session?.local.pinned ? 'Unpin session' : 'Pin session', Boolean(session), selectReason),
+      action('new-session', 'New session…', this.launchableAdapters().length > 0, 'No installed harness declares new-session support'), action('search-index','Search local transcripts…',true), action('ai-locate',this.searchMode==='ai'?'Show local search results':'Ask AI to locate session',Boolean(this.view==='search'&&this.query),'Open Search and enter a query first'), action('profile-create','Create launch profile…',Boolean(root),'Select a project or session first'), action('profile-run',profiles.length?`Run profile: ${profiles[0].name}`:'Run project profile',profiles.length>0,root?'Project has no launch profile':'Select a project first'), action('worktree-inspect','Inspect project worktrees',Boolean(root),'Select a project first'), action('worktree-create','Create Git worktree…',Boolean(root),'Select a project first'), action('latest-session', 'Go to latest session', Boolean(this.store.state.ui?.latestSession || this.store.state.ui?.mission), 'No latest session'), action('snooze', 'Snooze for one hour', Boolean(session), selectReason), action('wake', 'Wake now', Boolean(session?.local?.snoozedUntil), session ? 'Session is not snoozed' : selectReason), action('subagents', this.showSubagents ? 'Hide subagent threads' : 'Show subagent threads', true), action('continue', 'Continue where I left off', Boolean(this.continueSession())), action('resume', 'Resume session', Boolean(session), selectReason), action('pin', session?.local.pinned ? 'Unpin session' : 'Pin session', Boolean(session), selectReason),
       action('alias', 'Set local alias', Boolean(session), selectReason), action('tag', 'Set session tag', Boolean(session), selectReason), action('note', 'Add note', Boolean(session), selectReason), action('copy', 'Copy resume command', Boolean(session), selectReason),
       action('folder', 'Open working folder', Boolean(session?.cwd), session ? 'Session has no working folder' : selectReason), action('editor', 'Open in editor', Boolean(session?.cwd), session ? 'Session has no working folder' : selectReason),
       action('rename', 'Rename session', Boolean(session?.capabilities?.rename), session ? 'Harness does not support rename' : selectReason), action('move', 'Move to OpenCode project', Boolean(session?.capabilities?.move), session ? 'Only OpenCode sessions can move projects' : selectReason), action('archive', 'Archive session', Boolean(session?.capabilities?.archive), session ? 'Local hide is available instead' : selectReason),
@@ -275,8 +306,17 @@ export class SessionHubModel {
   async paletteKey(key) { if (key === 'esc' || key === 'ctrl+c') { this.palette = false; return; } const items = this.paletteItems(); if (key === 'up') { this.paletteIndex = clamp(this.paletteIndex - 1, 0, Math.max(0, items.length - 1)); this.paletteMessage = ''; } else if (key === 'down') { this.paletteIndex = clamp(this.paletteIndex + 1, 0, Math.max(0, items.length - 1)); this.paletteMessage = ''; } else if (key === 'backspace') { this.paletteQuery = this.paletteQuery.slice(0, -1); this.paletteIndex = 0; this.paletteMessage = ''; } else if (key === 'enter') { const item = items[this.paletteIndex]; if (!item?.enabled) { this.paletteMessage = item.reason || 'This action is unavailable for the current selection.'; this.status = this.paletteMessage; } else return this.runPaletteAction(item); } else if (key.length === 1) { this.paletteQuery += key; this.paletteIndex = 0; this.paletteMessage = ''; } }
   async runPaletteAction(item) {
     this.palette = false;
-    if (item.session) { this.setView('browser'); this.query = item.session.id; this.recompute(); return; }
+    if (item.session) { this.setView('projects'); this.query = item.session.id; this.recompute(); return; }
     if (item.id === 'new-session') return this.openLauncher();
+    if (item.id === 'search-index') { this.openSessionFinder(); return; }
+    if (item.id === 'ai-locate') return this.toggleAiSearch();
+    if (item.id === 'profile-create') { this.prompt = true; this.promptKind = 'profile'; this.promptValue = `${this.selected()?.project || 'project'} workspace`; return; }
+    if (item.id === 'profile-run') { const profile = this.profiles.list(this.selectedProjectRoot())[0]; const result = this.profiles.run(profile.id); this.status = `Launched ${profile.name} with ${result.backend}`; return; }
+    if (item.id === 'worktree-inspect') { const rows = this.worktrees.inspect(this.selectedProjectRoot()); this.status = `${rows.length} worktrees · ${rows.filter((row) => row.dirty).length} dirty · ${rows.filter((row) => row.merged).length} merged`; return; }
+    if (item.id === 'worktree-create') { const root = this.selectedProjectRoot(); this.prompt = true; this.promptKind = 'worktree'; this.promptValue = `feature ../${pathName(root)}-feature`; return; }
+    if (item.id === 'latest-session') return this.returnToLatestSession();
+    if (item.id === 'snooze') return this.snoozeSelected(60 * 60 * 1000);
+    if (item.id === 'wake') return this.wakeSelected();
     if (item.id === 'continue') return this.openSession(this.continueSession());
     if (item.id === 'subagents') return this.toggleSubagents();
     if (item.id === 'resume') return this.openSelected();
@@ -292,6 +332,9 @@ export class SessionHubModel {
   }
   async completePrompt(value) {
     if (this.promptKind === 'new-session') return this.launchNewSession(this.pendingAction, value);
+    if (this.promptKind === 'worktree') { const [branch, target] = value.split(/\s+/, 2); if (!branch || !target) { this.status = 'Enter: <new-branch> <target-path>'; return; } const data = {root:this.selectedProjectRoot(),branch,target}; const result=this.worktrees.create(data); this.pendingAction={kind:'worktree-create',data}; this.prompt=true;this.promptKind='confirm';this.promptValue='';this.status=`Type yes to create ${result.preview.target} from ${branch}`;return; }
+    if (this.promptKind === 'profile') { const session=this.selected();const adapter=session&&this.adapters.find((item)=>item.id===session.harness);const launch=adapter?.newSession||{command:session?.resume?.command||'sh',args:[]};const profile=this.profiles.save({name:value,root:this.selectedProjectRoot(),launches:[{command:launch.command,args:launch.args||[]}],tmux:{layout:'tiled'}});this.refreshProjectSummaries();this.status=`Created profile ${profile.name}`;return; }
+    if (this.promptKind === 'confirm' && this.pendingAction?.kind === 'worktree-create') { if(value!=='yes'){this.status='Action cancelled';return;}const result=this.worktrees.create({...this.pendingAction.data,confirm:true});this.pendingAction=null;this.status=`Created worktree ${result.target}`;return; }
     const session = this.selected(); if (!session) return;
     const adapter = this.adapters.find((item) => item.id === session.harness);
     if (this.promptKind === 'alias' || this.promptKind === 'note') { this.store.updateSession(sessionKey(session), {[this.promptKind]: value}); session.local[this.promptKind] = value; this.recordAction(session, `${this.promptKind}-updated`); this.status = `Saved local ${this.promptKind}`; return; }
@@ -328,6 +371,15 @@ export class SessionHubModel {
   launcherKey(key) { const adapters = this.launchableAdapters(); if (key === 'esc' || key === 'ctrl+c') { this.launcher = false; return; } if (key === 'up' || key === 'k') this.launcherIndex = clamp(this.launcherIndex - 1, 0, Math.max(0, adapters.length - 1)); else if (key === 'down' || key === 'j') this.launcherIndex = clamp(this.launcherIndex + 1, 0, Math.max(0, adapters.length - 1)); else if (key === 'enter') { const adapter = adapters[this.launcherIndex]; if (!adapter) return; this.launcher = false; this.prompt = true; this.promptKind = 'new-session'; this.pendingAction = adapter.id; this.promptValue = this.defaultLaunchCwd(); } }
   defaultLaunchCwd() { const row = this.selectedRow(); if (row?.session?.cwd) return row.session.cwd; if (row?.type === 'folder' && row.key !== 'Unknown folder') return row.key; return process.cwd(); }
   launchNewSession(harness, cwdValue) { const adapter = this.adapters.find((item) => item.id === harness); if (!adapter?.newSession) throw new Error(`Harness cannot create sessions: ${harness}`); const cwd = String(cwdValue || '').replace(/^~(?=\/|$)/, process.env.HOME || ''); if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) { this.status = `Working directory does not exist: ${cwd}`; return; } const launch = adapter.newSession; this.pendingAction = null; if (this.openMode === 'tty') return {type: 'open', command: launch.command, args: [...(launch.args || [])], cwd}; const [terminal, ...terminalArgs] = (process.env.TERMINAL || 'xdg-terminal-exec').split(/\s+/); const child = spawn(terminal, [...terminalArgs, launch.command, ...(launch.args || [])], {cwd, detached: true, stdio: 'ignore'}); child.unref(); this.status = `Started a new ${adapter.name} session in ${cwd}`; }
+  selectedProjectRoot() { const row=this.selectedRow();return row?.session?.cwd||row?.key||''; }
+  runLocalSearch() { this.searchMode='local';this.aiResults=[];this.searchResults = this.query ? this.index.search(this.query) : []; this.selectedSession = 0; this.scroll = 0; }
+  async askAiToLocate() { if(!this.query){this.status='Enter a local search query first';return;}const preferred=this.store.getKv('ai_provider')||undefined,preview=this.rag.preview(this.query,{provider:preferred});this.status=`Asking ${preview.provider} to rank ${preview.candidateCount} redacted candidates…`;this.onStatus?.();const result=await this.rag.find(this.query,{provider:preview.provider});this.aiProvider=result.provider;this.aiResults=result.matches;this.searchMode='ai';this.selectedSession=0;this.scroll=0;this.status=result.matches.length?`${result.provider} found ${result.matches.length} evidence-backed matches`:(result.message||`${result.provider} found no supported match`); }
+  async toggleAiSearch() { if(this.searchMode==='ai'){this.searchMode='local';this.selectedSession=0;this.scroll=0;this.status='Showing local search results';return;}return this.askAiToLocate(); }
+  openSessionFinder(prompt=true,mode='local') { if(this.view!=='search'){this.finderReturnView=this.view;this.finderReturnQuery=this.query;}this.view='search';this.query='';this.runLocalSearch();this.finderPromptMode=mode;if(prompt){this.prompt=true;this.promptKind='search';this.promptValue='';}this.status=mode==='ai'?'Describe the session for AI retrieval':'Search all session content'; }
+  closeSessionFinder() { this.view=this.finderReturnView||'dashboard';this.query=this.finderReturnQuery||'';this.searchResults=[];this.aiResults=[];this.searchMode='local';this.selectedSession=Number(this.store.state.ui?.selections?.[this.view]||0);this.scroll=0;this.recompute();this.status=`Returned to ${this.view}`; }
+  async openGlobalSessionFinder(mode='ai') { if(this.view!=='search')return this.openSessionFinder(true,mode);if(!this.query){this.prompt=true;this.promptKind='search';this.promptValue='';this.finderPromptMode=mode;return;}return this.toggleAiSearch(); }
+  relatedSelected() { const session = this.selected(); return session ? this.index.related(session) : []; }
+  refreshProjectSummaries() { this.projectSummaries.clear(); for (const cwd of new Set(this.sessions.map((session) => session.cwd).filter(Boolean))) { const sessions = this.sessions.filter((session) => session.cwd === cwd); let worktrees = []; try { worktrees = this.worktrees.inspect(cwd); } catch {} this.projectSummaries.set(cwd, {active: sessions.filter((session) => [STATUS.RUNNING, STATUS.WAITING].includes(session.status)).length, dirty: worktrees.filter((item) => item.dirty).length, worktrees: worktrees.length, profiles: this.profiles.list(cwd).length, branches: new Set(sessions.map((session) => session.branch).filter(Boolean)).size, lastActivity: Math.max(...sessions.map((session) => session.updatedAt || 0))}); } }
 }
 
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
@@ -337,6 +389,8 @@ function mergeMetadata(session, local) { const git = session.git || {}; return {
 function action(id, label, enabled, reason = '') { return {id, label, enabled, reason}; }
 function fuzzy(value, query) { let index = 0; for (const character of value) if (character === query[index]) index += 1; return index === query.length; }
 function fuzzyScore(value, query) { if (!query) return 0; const exact = value.indexOf(query); return exact >= 0 ? 1000 - exact : query.length; }
+function pathName(value) { return String(value || 'project').split('/').filter(Boolean).pop() || 'project'; }
+function shortError(error) { return String(error?.stderr || error?.message || error).trim().split('\n').pop().replace(/^Error:\s*/,''); }
 
 export function folderKey(session) {
   return session.cwd || session.project || 'Unknown folder';

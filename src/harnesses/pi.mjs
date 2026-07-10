@@ -26,6 +26,9 @@ export class PiAdapter {
     return parsed.filter((entry) => entry.type === 'message' && ['user', 'assistant'].includes(entry.message?.role))
       .map((entry) => ({role: entry.message.role, text: contentText(entry.message.content)})).filter((message) => message.text).slice(-8);
   }
+  async messagesSince(session) { return this.preview(session); }
+  projectIdentity(session) { return session.cwd || session.project; }
+  prepareLaunch({cwd}) { return {...this.newSession, cwd}; }
 
   async rename(session, title) {
     const entry = {type: 'session_info', id: randomId(), parentId: latestEntryId(session.raw.file), timestamp: new Date().toISOString(), name: title};

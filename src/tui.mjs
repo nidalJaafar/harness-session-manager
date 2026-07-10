@@ -11,37 +11,41 @@ export function render(model) {
   const mainWidth = Math.max(48, Math.floor(width * 0.64));
   const detailWidth = width - mainWidth - 1;
   const bodyHeight = height - 8;
-  const left = model.view === 'dashboard' ? dashboardLines(model, mainWidth - 2, bodyHeight - 2) : sessionLines(model, mainWidth - 2, bodyHeight - 2);
+  const left = model.view === 'dashboard' ? dashboardLines(model, mainWidth - 2, bodyHeight - 2) : model.view === 'search' ? searchLines(model, mainWidth - 2, bodyHeight - 2) : sessionLines(model, mainWidth - 2, bodyHeight - 2);
   const right = detailLines(model, detailWidth - 2, bodyHeight - 2);
-  const viewTitle = model.view === 'dashboard' ? ' session dashboard ' : ' folders & sessions ';
+  const viewTitle = model.view === 'dashboard' ? ' attention dashboard ' : model.view === 'search' ? ' session finder ' : ' project cockpits ';
   const body = columns(box(left, mainWidth, viewTitle, true, bodyHeight), box(right, detailWidth, ' context ', false, bodyHeight));
   const selected = model.selected();
   const source = model.sources[model.selectedSource];
-  const headerLeft = `HSM  1 Dashboard  2 Browser  / ${model.view.toUpperCase()}`;
+  const headerLeft = model.view==='search'?'HSM  / SESSION FINDER':`HSM  1 Dashboard  2 Projects  / ${model.view.toUpperCase()}`;
   const hiddenSubagents = model.sessions.filter((session) => session.isSubagent && (model.source === 'all' || session.harness === model.source)).length;
   const headerRight = `${source?.name || 'All harnesses'}  Folders:${folderCount(model)}  Sessions:${model.filtered.length}/${model.sessions.length}${hiddenSubagents ? `  Agents:${model.showSubagents ? 'shown' : `hidden ${hiddenSubagents}`}` : ''}`;
   return [fit(headerLeft + ' '.repeat(Math.max(1, width - headerLeft.length - headerRight.length)) + headerRight, width), '─'.repeat(width), ...body,
     fit(` ${contextLine(model)}`, width),
     fit(` ${model.status}`, width),
-    fit(' 1/2 views   j/k move   Enter inspect   n new session   Ctrl+K actions   / search   ? all keys   q quit', width)].join('\n');
+    fit(`${model.view==='search'?` Esc back   / edit query   A ${model.searchMode==='ai'?'local':'ask AI'}`:' 1/2 views   j/k move   n new   z snooze   l latest   / find session'}   Ctrl+K actions   ? help`, width)].join('\n');
 }
 
 function renderHelp(model) {
   const width = Math.min(96, Math.max(70, model.width - 10));
   const lines = [
     '  NAVIGATION',
-    '  1 Dashboard    2 Browser',
+    '  1 Dashboard    2 Projects',
     '  j/k or ↑/↓ Move    PgUp/PgDn Jump ten rows',
     '',
     '  SESSION & FOLDERS',
     '  Enter Expand/inspect    ←/→ Collapse/expand',
     '  n New session    v Preview    o Resume',
     '  h Show resume command',
-    '  p Pin/unpin    u Undo latest supported action',
+    '  p Pin/unpin    z Snooze 1h    w Wake now',
+    '  l Go to latest session    u Undo',
     '',
     '  FILTERS & ACTIONS',
     '  / Search    f/Tab Harness    s Subagents',
+    '  / Open session finder with local search',
+    '  In Finder only: A toggle AI/local ranking',
     '  g Grouped/recent    r Reload    Ctrl+K Actions',
+    '  Project stats: active · branches · worktrees · profiles',
     '',
     '  GENERAL',
     '  ? Help    Esc Close overlay    q/Ctrl+C Quit',
@@ -98,7 +102,8 @@ function sessionLines(model, width, height) {
       const opencode = row.sessions.filter((session) => session.harness === 'opencode').length;
       const signals = [claude ? `${claude} CC` : '', opencode ? `${opencode} OC` : ''].filter(Boolean).join(' · ');
       const folder = folderParts(row.key);
-      lines.push(fit(`${active ? '❯' : ' '} ${row.collapsed ? '▶' : '▼'} ${folder.name}  (${row.sessions.length})  ${signals}`, width));
+      const summary = row.summary || {};
+      lines.push(fit(`${active ? '❯' : ' '} ${row.collapsed ? '▶' : '▼'} ${folder.name}  (${row.sessions.length})  ${signals}  ${summary.active || 0} active · ${summary.branches || 0} branches · ${summary.worktrees || 0} worktrees · ${summary.profiles || 0} profiles`, width));
       lines.push(fit(`      ${folder.parent}`, width));
       continue;
     }
@@ -119,16 +124,29 @@ function sessionLines(model, width, height) {
   return lines;
 }
 
+function searchLines(model, width, height) {
+  const mode=model.searchMode==='ai'?`AI RANKING · ${model.aiProvider.toUpperCase()}`:'LOCAL INDEX';
+  const lines=[`  ${mode}  /  ${model.query || 'Press / to search indexed transcripts'}`,''];
+  const rows=model.rows(); const end=Math.min(rows.length,model.scroll+Math.max(1,height-3));
+  for(let i=model.scroll;i<end;i++){const row=rows[i],active=i===model.selectedSession,result=row.result;if(row.type==='ai-search')lines.push(fit(`${active?'❯':' '} ${badge(result.harness)} ${result.confidence}%  ${result.title}  ${oneLine(result.reason)}`,width));else lines.push(fit(`${active?'❯':' '} ${badge(result.harness)} ${result.project || 'unknown'}  ${result.role}  ${oneLine(result.snippet)}`,width));}
+  if(model.query&&!rows.length)lines.push(model.searchMode==='ai'?'  AI found no evidence-backed session.':'  No local match. Press A to ask AI to locate the session.');
+  else if(model.searchMode==='local'&&model.query)lines.push('', '  Not the right result? Press A for AI-assisted retrieval.');
+  while(lines.length<height)lines.push('');return lines.slice(0,height);
+}
+
 function detailLines(model, width, height) {
   const row = model.selectedRow();
   const lines = [];
   if (!row) return ['', '  No sessions match the current filter.'];
+  if (row.type === 'ai-search') return ['', `  ${badge(row.result.harness)} AI SESSION MATCH`, '', `  CONFIDENCE  ${row.result.confidence}%`, '', '  TITLE', `  ${row.result.title}`, '', '  WHY IT MATCHED', ...wrapText(row.result.reason || 'No explanation', width - 4, 4).map((line)=>`  ${line}`), '', '  EVIDENCE', ...wrapText(row.result.matchedEvidence || 'No excerpt', width - 4, 5).map((line)=>`  ${line}`), '', row.session ? '  o  Resume exact session' : '  Source session is unavailable'];
+  if (row.type === 'search') return ['', `  ${badge(row.result.harness)} SEARCH RESULT`, '', `  ${row.result.project || 'Unknown project'}`, `  ${row.result.branch || 'No branch'}`, '', `  ${oneLine(row.result.snippet)}`, '', `  ${row.result.paths ? `PATHS  ${row.result.paths}` : ''}`, '', row.session ? '  o  Resume session' : '  Source session is unavailable'];
   if (row.type === 'lane') return ['', `  ${laneGlyph(row.lane)} ${row.lane.toUpperCase()}`, '', `  ${row.count} sessions`, '', '  Enter toggles this lane.'];
   if (row.type === 'folder') {
     const folder = folderParts(row.key);
     const claude = row.sessions.filter((session) => session.harness === 'claude').length;
     const opencode = row.sessions.filter((session) => session.harness === 'opencode').length;
-    lines.push('', `  ${row.collapsed ? '▶' : '▼'} ${folder.name}`, '', '  PATH', `  ${folder.parent}`, '', '  SESSIONS', `  ${row.sessions.length} total`, `  ${claude} Claude Code`, `  ${opencode} OpenCode`, '', `  Enter  ${row.collapsed ? 'expand' : 'collapse'}`, `  ${row.collapsed ? '→' : '←'}      ${row.collapsed ? 'expand' : 'collapse'}`);
+    const summary = row.summary || {};
+    lines.push('', `  ${row.collapsed ? '▶' : '▼'} ${folder.name}`, '', '  PATH', `  ${folder.parent}`, '', '  COCKPIT', `  ${row.sessions.length} sessions · ${summary.active || 0} active`, `  ${summary.branches || 0} branches · ${summary.worktrees || 0} worktrees`, `  ${summary.dirty || 0} dirty · ${summary.profiles || 0} profiles`, '', '  HARNESS MIX', `  ${claude} Claude Code`, `  ${opencode} OpenCode`, '', `  Enter  ${row.collapsed ? 'expand' : 'collapse'}`, `  ${row.collapsed ? '→' : '←'}      ${row.collapsed ? 'expand' : 'collapse'}`);
     return lines.map((line) => fit(line, width));
   }
   const session = row.session;
@@ -140,6 +158,8 @@ function detailLines(model, width, height) {
     lines.push('', '  RESUME', `  ${session.resume.command} ${session.resume.args.join(' ')}`, '', '  r reload metadata · Esc returns to browsing');
   } else {
     lines.push('', `  ${statusGlyph(session)} ${badge(session.harness)} ${session.harnessName}`, '', '  TITLE', `  ${session.local.alias || session.title}`, '', '  FOLDER', `  ${session.cwd || 'Unknown'}`, '', '  MODEL / AGENT', `  ${session.model || 'unknown'}${session.agent ? ` · ${session.agent}` : ''}`, '', '  COST / TOKENS', `  ${session.cost == null ? 'not reported' : `$${session.cost.toFixed(4)}`} · ${tokenTotal(session)} tokens`, '', '  GIT', `  ${session.branch || 'no branch'}${session.git?.dirty ? ` · ${session.git.files} dirty files` : ' · clean'}${diffSummary(session)}`, '', '  RESUME', `  ${session.resume.command} ${session.resume.args.join(' ')}`);
+    const related = model.relatedSelected();
+    if (related.length) lines.push('', '  RELATED', ...related.slice(0, 2).map((item) => `  ${badge(item.harness)} ${item.title}`));
     lines.push('', '  Enter  load preview', '  o      resume session');
   }
   while (lines.length < height) lines.push('');
@@ -167,9 +187,10 @@ export async function run(model) {
   const screen = new TextRenderable(renderer, {content: '', width: '100%', height: '100%', fg: colors.fg, bg: colors.bg});
   root.add(screen); renderer.root.add(root);
   const redraw = () => { model.width = renderer.width || 120; model.height = renderer.height || 36; screen.content = styled(render(model), StyledText, colors); renderer.requestRender(); };
-  renderer.keyInput.on('keypress', (event) => void (async () => { const result = await model.key(normalize(event)); if (result === 'quit') return renderer.destroy(); if (result?.type === 'open') { renderer.destroy(); const child = spawnSync(result.command, result.args, {cwd: result.cwd, stdio: 'inherit'}); process.exit(child.status ?? 1); } redraw(); })());
+  model.onStatus = redraw;
+  renderer.keyInput.on('keypress', (event) => void (async () => { try { const result = await model.key(normalize(event)); if (result === 'quit') return renderer.destroy(); if (result?.type === 'open') { renderer.destroy(); const child = spawnSync(result.command, result.args, {cwd: result.cwd, stdio: 'inherit'}); process.exit(child.status ?? 1); } } catch (error) { model.status = `Action failed: ${cleanError(error)}`; } redraw(); })());
   let refreshPending = false;
-  const liveTimer = setInterval(() => { if (refreshPending) return; refreshPending = true; void model.refreshLive().then(redraw).finally(() => { refreshPending = false; }); }, 2000);
+  const liveTimer = setInterval(() => { if (refreshPending) return; refreshPending = true; void model.refreshLive().catch((error) => { model.status = `Refresh delayed: ${cleanError(error)}`; }).then(redraw).finally(() => { refreshPending = false; }); }, 2000);
   renderer.on('destroy', () => clearInterval(liveTimer));
   renderer.on('resize', redraw); redraw(); renderer.start();
 }
@@ -235,7 +256,8 @@ function textChunk(text, fg = null, attributes = 0) {
   if (attributes) chunk.attributes = attributes;
   return chunk;
 }
-function normalize(e) { if (e.ctrl && e.name === 'c') return 'ctrl+c'; if (e.ctrl && e.name === 'k') return 'ctrl+k'; const names = {return: 'enter', escape: 'esc'}; if (names[e.name]) return names[e.name]; if (['space', 'backspace', 'delete', 'pageup', 'pagedown', 'tab', 'up', 'down', 'left', 'right'].includes(e.name)) return e.name; return e.sequence?.length === 1 ? e.sequence : e.name || ''; }
+export function normalizeKey(e) { if (e.ctrl && e.name === 'c') return 'ctrl+c'; if (e.ctrl && e.name === 'k') return 'ctrl+k'; const names = {return: 'enter', escape: 'esc'}; if (names[e.name]) return names[e.name]; if (['space', 'backspace', 'delete', 'pageup', 'pagedown', 'tab', 'up', 'down', 'left', 'right'].includes(e.name)) return e.name; if(e.shift&&String(e.name||'').length===1)return String(e.name).toUpperCase();return e.sequence?.length === 1 ? e.sequence : e.name || ''; }
+const normalize=normalizeKey;
 function columns(a, b) { return Array.from({length: Math.max(a.length, b.length)}, (_, i) => (a[i] || '').padEnd(a[0]?.length || 0) + ' ' + (b[i] || '')); }
 function box(lines, width, title, active, height = null) { const h = active ? '═' : '─', v = active ? '║' : '│'; const bodyHeight = height == null ? lines.length : height - 2; const body = [...lines]; while (body.length < bodyHeight) body.push(''); return [(active ? '╔' : '┌') + title + h.repeat(Math.max(0, width - title.length - 2)) + (active ? '╗' : '┐'), ...body.slice(0, bodyHeight).map((line) => v + fit(line, width - 2).padEnd(width - 2) + v), (active ? '╚' : '└') + h.repeat(width - 2) + (active ? '╝' : '┘')]; }
 function fit(value, width) { const text = String(value || ''); return text.length <= width ? text : text.slice(0, Math.max(0, width - 1)) + '…'; }
@@ -277,6 +299,8 @@ function contextLine(model) {
   if (row?.type === 'lane') return `${laneGlyph(row.lane)} ${row.lane.toUpperCase()} · ${row.count} sessions · Enter toggles`;
   if (row?.type === 'event') return `${eventGlyph(row.event.type)} ${row.event.type} · ${row.event.harness}:${row.event.sessionId}`;
   if (row?.type === 'folder') return `${row.collapsed ? 'COLLAPSED' : 'EXPANDED'} FOLDER · ${folderParts(row.key).name} · Enter toggles`;
+  if (row?.type === 'search') return `${badge(row.result.harness)} ${row.result.project} · ${row.result.role} · o resumes source session`;
+  if (row?.type === 'ai-search') return `${badge(row.result.harness)} AI match ${row.result.confidence}% · o resumes exact session`;
   const session = row?.session;
   return session ? `${badge(session.harness)} ${session.title} · o opens · Enter previews` : 'Select a folder with j/k · Enter expands';
 }
@@ -284,17 +308,17 @@ function renderPalette(model) {
   const width = Math.min(92, Math.max(58, model.width - 12));
   const items = model.paletteItems();
   const target = model.selected();
-  const guidance = model.paletteMessage || (target ? 'Choose an action for this session.' : 'Select a session in Dashboard or Browser to enable session actions.');
+  const guidance = model.paletteMessage || (target ? 'Choose an action for this session.' : 'Select a session in Dashboard or Projects to enable session actions.');
   const lines = [`  TARGET  ${target ? `${badge(target.harness)} ${target.local.alias || target.title}` : 'No session selected'}`, `  ${guidance}`, '', `  › ${model.paletteQuery}`, '  ─────────────────────────────────────'];
   for (const [index, item] of items.slice(0, 12).entries()) lines.push(fit(`${index === model.paletteIndex ? '❯' : ' '} ${item.label}${item.enabled ? '' : `  [disabled: ${item.reason}]`}`, width - 2));
   if (!items.length) lines.push('  No matching commands or sessions.');
   lines.push('', '  Type to filter · ↑/↓ move · Enter run · Esc close');
   return box(lines, width, ' command palette ', true).join('\n');
 }
-function promptTitle(model) { if (model.promptKind === 'new-session') { const adapter = model.adapters.find((item) => item.id === model.pendingAction); return `NEW ${String(adapter?.name || model.pendingAction).toUpperCase()} SESSION · WORKING DIRECTORY`; } return model.promptKind === 'search' ? 'SEARCH SESSIONS' : model.promptKind === 'confirm' ? `CONFIRM ${String(model.pendingAction || '').toUpperCase()}` : `${model.promptKind.toUpperCase()} SESSION`; }
+function promptTitle(model) { if (model.promptKind === 'new-session') { const adapter = model.adapters.find((item) => item.id === model.pendingAction); return `NEW ${String(adapter?.name || model.pendingAction).toUpperCase()} SESSION · WORKING DIRECTORY`; } if(model.promptKind==='worktree')return 'NEW WORKTREE · BRANCH AND TARGET PATH';if(model.promptKind==='profile')return 'NEW PROJECT PROFILE · NAME';return model.promptKind === 'search' ? (model.view==='search'?'SEARCH LOCAL TRANSCRIPTS':'FILTER SESSIONS') : model.promptKind === 'confirm' ? `CONFIRM ${typeof model.pendingAction==='string'?model.pendingAction.toUpperCase():'WORKTREE CREATION'}` : `${model.promptKind.toUpperCase()} SESSION`; }
 function commandCenterSessionLine(session, active, width, indent = '') { const lead = `${active ? '❯' : ' '} ${indent}${statusGlyph(session)} ${badge(session.harness)} ${session.local.alias || session.title}`; const right = `◷ ${age(session.updatedAt)}  ⌂ ${fit(session.project || 'unknown', 15)}`; const gap = width - lead.length - right.length; return fit(gap >= 2 ? `${lead}${' '.repeat(gap)}${right}` : `${lead}  ${right}`, width); }
 function statusGlyph(session) { if (session.local?.pinned) return '★'; return {running: '●', waiting: '◆', completed: '✓', failed: '!', stale: '○', offline: '○'}[session.status] || '○'; }
-function laneGlyph(lane) { return {waiting: '◆', running: '●', 'needs attention': '!', pinned: '★', recent: '◷'}[lane] || '·'; }
+function laneGlyph(lane) { return {waiting: '◆', running: '●', pinned: '★', snoozed: '◌', recent: '◷'}[lane] || '·'; }
 function tokenTotal(session) { const tokens = session.tokens || {}; return Number(tokens.input || 0) + Number(tokens.output || 0) + Number(tokens.reasoning || 0); }
 function diffSummary(session) { const git = session.git || {}; return git.additions || git.deletions ? ` · +${git.additions || 0}/-${git.deletions || 0}` : ''; }
 function folderCount(model) { return new Set(model.filtered.map((session) => session.cwd || session.project || 'Unknown folder')).size; }
@@ -311,3 +335,4 @@ function visibleRowEnd(rows, start, lineBudget) {
 }
 function badge(harness) { return harness === 'claude' ? '[CC]' : harness === 'opencode' ? '[OC]' : harness === 'pi' ? '[PI]' : '[??]'; }
 function age(time) { const d = Date.now() - Number(time || 0), m = Math.floor(d / 60000); if (m < 1) return 'now'; if (m < 60) return `${m}m`; const h = Math.floor(m / 60); if (h < 24) return `${h}h`; const days = Math.floor(h / 24); return days < 30 ? `${days}d` : `${Math.floor(days / 30)}mo`; }
+function cleanError(error) { return String(error?.stderr || error?.message || error).trim().split('\n').pop().replace(/^Error:\s*/, ''); }

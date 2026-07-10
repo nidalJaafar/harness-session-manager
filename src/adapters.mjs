@@ -49,6 +49,9 @@ export class ClaudeAdapter {
     return messages.map((message) => ({role: message.type, text: messageText(message.message)}))
       .filter((message) => ['user', 'assistant'].includes(message.role) && message.text && !isClaudeMetaMessage(message.text));
   }
+  async messagesSince(session) { return this.preview(session); }
+  projectIdentity(session) { return session.cwd || session.project; }
+  prepareLaunch({cwd}) { return {...this.newSession, cwd}; }
 
   async rename(session, title) { await this.sdk.renameSession(session.id, title, session.cwd ? {dir: session.cwd} : undefined); return {title}; }
   async tag(session, tag) { await this.sdk.tagSession(session.id, tag || null, session.cwd ? {dir: session.cwd} : undefined); return {tag}; }
@@ -126,6 +129,9 @@ export class OpenCodeAdapter {
       return [];
     }
   }
+  async messagesSince(session) { return this.preview(session); }
+  projectIdentity(session) { return session.cwd || session.projectId || session.project; }
+  prepareLaunch({cwd}) { return {...this.newSession, cwd}; }
 
   async rename(session, title) { this.sql(this.dbPath, `update session set title=${sqlString(title)}, time_updated=${Date.now()} where id=${sqlString(session.id)} returning id;`); return {title, integrity: integrityCheck(this.dbPath)}; }
   async archive(session) { const backupPath = backupDb(this.dbPath); this.sql(this.dbPath, `update session set time_archived=${Date.now()} where id=${sqlString(session.id)} returning id;`); return {archived: true, backupPath, integrity: integrityCheck(this.dbPath)}; }

@@ -9,7 +9,7 @@ import {ensureHooksInstalled, runSubcommand} from './cli.mjs';
 const args = process.argv.slice(2);
 const value = (flag, fallback) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : fallback; };
 if (args.includes('--help') || args.includes('-h')) {
-  console.log('Usage: hsm [--preview] [--db path] [--only claude|opencode|pi] [--show-subagents]\n       hsm event --harness <id> --session <id> --type <type>\n       hsm hooks install|remove|status\n       hsm doctor\n\nUnified coding-harness command center.');
+  console.log('Usage: hsm [--preview] [--db path] [--only claude|opencode|pi] [--show-subagents]\n       hsm event --harness <id> --session <id> --type <type>\n       hsm hooks install|remove|status\n       hsm daemon install|remove|start|stop|status\n       hsm profile list|create|edit|duplicate|export|import|run\n       hsm worktree inspect|create|cleanup\n       hsm index status|rebuild|pause|resume|exclude|delete\n       hsm search <query>\n       hsm ai status|provider <claude|pi>|find <query>\n       hsm doctor\n\nLocal harness command center.');
   process.exit(0);
 }
 if (await runSubcommand(args)) process.exit(0);

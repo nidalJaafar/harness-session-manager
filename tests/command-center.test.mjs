@@ -83,7 +83,7 @@ test('view selection and pin state persist', async () => {
   await model.load(); model.setView('browser'); model.query = 's1'; model.recompute(); model.selectedSession = 0;
   model.view = 'dashboard'; model.selectedSession = model.rows().findIndex((row) => row.type === 'session'); model.togglePin();
   const restored = new StateStore({dir});
-  assert.equal(restored.state.ui.view, 'browser');
+  assert.equal(restored.state.ui.view, 'projects');
   assert.equal(restored.metadata('claude:s1').pinned, true);
 });
 
