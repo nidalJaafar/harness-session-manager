@@ -1,5 +1,25 @@
 # Installing Harness Session Manager
 
+## Instructions for coding agents
+
+If the user asks you to install HSM using this document, perform the installation instead of only summarizing these instructions.
+
+1. Confirm that the host is Linux and inspect the required commands listed below.
+2. Run the one-command installer.
+3. Add `~/.local/bin` to the active shell's `PATH` when necessary.
+4. Run `hsm doctor` and report any failed checks with their exact remediation.
+5. Run `hsm --preview` to verify session discovery without opening the interactive TUI.
+6. Report the installed executable path and verification result.
+
+Do not launch the interactive `hsm` TUI from a non-interactive agent terminal. Do not merely repeat the commands unless execution is blocked by permissions or a missing prerequisite.
+
+Recommended user prompt:
+
+```text
+Install Harness Session Manager by following this document, execute the commands, and verify the installation:
+https://github.com/nidalJaafar/harness-session-manager/blob/master/INSTALL.md
+```
+
 ## One-command installation
 
 ```bash
