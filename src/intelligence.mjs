@@ -10,14 +10,17 @@ export class IntelligenceIndex {
   exclude(project) { const values=[...new Set([...this.exclusions(),project])]; this.store.setKv('index_exclusions',values); for(const row of this.store.query(`select session_key as sessionKey from indexed_sessions where cwd=${quote(project)} or cwd like ${quote(`${project}/%`)}`))this.deleteSession(row.sessionKey); return values; }
   async indexSessions(sessions, adapters, {force=false, limit=200}={}) {
     if (this.paused()) return {indexed:0,paused:true}; let indexed=0;
+    const exclusions=this.exclusions();
+    const indexedSessions=new Map(this.store.query('select session_key as sessionKey,updated_at as updatedAt from indexed_sessions').map((row)=>[row.sessionKey,Number(row.updatedAt||0)]));
+    const table=this.backend()==='fts5'?'messages_fts':'indexed_messages';
     for (const session of sessions.slice(0,limit)) {
-      if (this.exclusions().some((value) => session.cwd === value || session.cwd?.startsWith(`${value}/`))) continue;
-      const key=sessionKey(session); const old=this.store.query(`select updated_at from indexed_sessions where session_key=${quote(key)}`)[0];
-      if (!force && Number(old?.updated_at) >= Number(session.updatedAt || 0)) continue;
+      if (exclusions.some((value) => session.cwd === value || session.cwd?.startsWith(`${value}/`))) continue;
+      const key=sessionKey(session),oldUpdatedAt=indexedSessions.get(key)||0;
+      if (!force && oldUpdatedAt >= Number(session.updatedAt || 0)) continue;
       const adapter=adapters.find((item)=>item.id===session.harness); if (!adapter) continue;
-      let messages=[]; try { messages=typeof adapter.messagesSince==='function' ? await adapter.messagesSince(session,old?.updated_at || 0) : await adapter.preview(session); } catch { continue; }
+      let messages=[]; try { messages=typeof adapter.messagesSince==='function' ? await adapter.messagesSince(session,oldUpdatedAt) : await adapter.preview(session); } catch { continue; }
       try {
-        const table=this.backend()==='fts5'?'messages_fts':'indexed_messages';const columns=this.backend()==='fts5'?'session_key,harness,session_id,project,branch,role,content,created_at,paths':'session_key,harness,session_id,project,branch,role,content,created_at,paths';
+        const columns='session_key,harness,session_id,project,branch,role,content,created_at,paths';
         const inserts=messages.map((message)=>`insert into ${table}(${columns}) values(${quote(key)},${quote(session.harness)},${quote(session.id)},${quote(session.project)},${quote(session.branch)},${quote(message.role)},${quote(message.text)},${Number(message.createdAt || session.updatedAt || 0)},${quote(extractPaths(message.text).join(' '))});`).join('\n');
         this.store.exec(`begin; delete from ${table} where session_key=${quote(key)}; ${inserts} insert or replace into indexed_sessions values(${quote(key)},${quote(session.harness)},${quote(session.id)},${quote(session.title)},${quote(session.project)},${quote(session.cwd)},${quote(session.branch)},${quote(session.status)},${Number(session.updatedAt || 0)},${Date.now()}); commit;`); indexed++;
       } catch (error) { throw error; }

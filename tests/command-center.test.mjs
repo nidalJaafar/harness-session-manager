@@ -57,6 +57,8 @@ test('process detection preserves case-sensitive IDs and ignores terminal wrappe
   assert.deepEqual(processes, [{harness: 'opencode', sessionId: 'ses_ABC123', pid: 2, cwd: ''}]);
 });
 
+test('process detection recognizes Codex resume and ignores its app server',()=>{const rows=scanHarnessProcesses({exec:()=>[{pid:1,executable:'codex',command:'codex app-server --remote-control'},{pid:2,executable:'codex',command:'codex resume 019f-ABC'}]});assert.deepEqual(rows,[{harness:'codex',sessionId:'019f-ABC',pid:2,cwd:''}]);});
+
 test('anonymous harness process marks only the newest session in its cwd running', () => {
   const cwd = process.cwd();
   const old = {...fixture(), id: 'old', updatedAt: 1};

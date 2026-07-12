@@ -1,6 +1,6 @@
 # Harness Session Manager
 
-HSM is a local command center for Claude Code, OpenCode, Pi, and external harness plugins. It combines live attention state, project/worktree orchestration, private transcript search, persistent organization, and safe session management in one TUI.
+HSM is a local command center for Claude Code, OpenCode, Pi, Codex, and external harness plugins. It combines live attention state, project/worktree orchestration, private transcript search, persistent organization, and safe session management in one TUI.
 
 ## Install
 
@@ -16,7 +16,7 @@ See [INSTALL.md](INSTALL.md) for requirements, updates, uninstalling, and agent-
 
 | Area | Features |
 | --- | --- |
-| Unified sessions | Claude Code, OpenCode, Pi, and external adapters in one normalized queue |
+| Unified sessions | Claude Code, OpenCode, Pi, Codex CLI/Desktop, and external adapters in one normalized queue |
 | Live attention | Running/waiting/failed/stale detection, snoozing, pins, and optional notifications |
 | Project cockpit | Collapsible project trees, Git context, branches, worktrees, launch profiles, and harness counts |
 | Session control | Start, resume, preview, rename, tag, note, alias, archive, move, hide, and undo where supported |
@@ -68,6 +68,10 @@ Press `Ctrl+K` for every supported action or `?` for the complete keyboard refer
 The palette includes session search, latest-session navigation, profile creation/running, worktree inspection/creation, snooze controls, resume/copy/open actions, local metadata, supported native mutations, and session hiding. Worktree creation shows a preview and requires typing `yes`.
 
 Subagent and child threads are hidden by default. Press `s`, use the palette, set `HSM_SHOW_SUBAGENTS=1`, or pass `--show-subagents` to include them; the TUI preference is persisted.
+
+### Codex support
+
+HSM discovers the newest local `$CODEX_HOME/state_*.sqlite` store and reads transcript previews from rollout JSONL files. Both Codex CLI and Codex Desktop threads appear as `[CX]`; spawned child threads follow the existing hidden-subagent preference. Resume uses `codex resume <thread-id>`, while `n` can launch a new `codex` session. Recent thread-scoped entries in the newest `$CODEX_HOME/logs_*.sqlite` provide exact live-running state without installing hooks or changing Codex configuration.
 
 ## Live state and lifecycle integrations
 
@@ -205,7 +209,7 @@ Doctor checks harness executables, Bun, SQLite and the OpenCode database, HSM da
 ## CLI
 
 ```text
-hsm [--preview] [--db path] [--only claude|opencode|pi]
+hsm [--preview] [--db path] [--only claude|opencode|pi|codex]
 hsm event --harness <id> --session <id> --type <type>
 hsm hooks install|remove|status
 hsm daemon install|remove|start|stop|status

@@ -44,6 +44,7 @@ export class SessionHubModel {
     this.finderPromptMode = 'local';
     this.aiProvider = '';
     this.projectSummaries = new Map();
+    this.relatedCache = new Map();
     this.events = [];
     this.palette = false;
     this.paletteQuery = '';
@@ -64,9 +65,10 @@ export class SessionHubModel {
     const processes = this.safeProcesses();
     this.sessions = applyLiveState(data.sessions.map((session) => mergeMetadata(session, this.store.metadata(sessionKey(session)))), this.events, processes)
       .filter((session) => !session.local.hidden);
+    this.relatedCache.clear();
     this.indexWarning = '';
     try { await this.index.indexSessions(this.sessions, this.adapters); } catch (error) { this.indexWarning = `Index deferred: ${shortError(error)}`; }
-    this.refreshProjectSummaries();
+    this.refreshProjectSummaries(8);
     if (!this.collapseInitialized) {
       const expanded = new Set(this.store.state.ui?.expandedFolders || []);
       for (const session of this.sessions) if (!expanded.has(folderKey(session))) this.collapsedFolders.add(folderKey(session));
@@ -378,8 +380,8 @@ export class SessionHubModel {
   openSessionFinder(prompt=true,mode='local') { if(this.view!=='search'){this.finderReturnView=this.view;this.finderReturnQuery=this.query;}this.view='search';this.query='';this.runLocalSearch();this.finderPromptMode=mode;if(prompt){this.prompt=true;this.promptKind='search';this.promptValue='';}this.status=mode==='ai'?'Describe the session for AI retrieval':'Search all session content'; }
   closeSessionFinder() { this.view=this.finderReturnView||'dashboard';this.query=this.finderReturnQuery||'';this.searchResults=[];this.aiResults=[];this.searchMode='local';this.selectedSession=Number(this.store.state.ui?.selections?.[this.view]||0);this.scroll=0;this.recompute();this.status=`Returned to ${this.view}`; }
   async openGlobalSessionFinder(mode='ai') { if(this.view!=='search')return this.openSessionFinder(true,mode);if(!this.query){this.prompt=true;this.promptKind='search';this.promptValue='';this.finderPromptMode=mode;return;}return this.toggleAiSearch(); }
-  relatedSelected() { const session = this.selected(); return session ? this.index.related(session) : []; }
-  refreshProjectSummaries() { this.projectSummaries.clear(); for (const cwd of new Set(this.sessions.map((session) => session.cwd).filter(Boolean))) { const sessions = this.sessions.filter((session) => session.cwd === cwd); let worktrees = []; try { worktrees = this.worktrees.inspect(cwd); } catch {} this.projectSummaries.set(cwd, {active: sessions.filter((session) => [STATUS.RUNNING, STATUS.WAITING].includes(session.status)).length, dirty: worktrees.filter((item) => item.dirty).length, worktrees: worktrees.length, profiles: this.profiles.list(cwd).length, branches: new Set(sessions.map((session) => session.branch).filter(Boolean)).size, lastActivity: Math.max(...sessions.map((session) => session.updatedAt || 0))}); } }
+  relatedSelected() { const session=this.selected();if(!session)return[];const key=`${sessionKey(session)}:${session.updatedAt||0}`;if(!this.relatedCache.has(key))this.relatedCache.set(key,this.index.related(session));return this.relatedCache.get(key); }
+  refreshProjectSummaries(deepLimit=8) { this.projectSummaries.clear();const grouped=new Map();for(const session of this.sessions){if(!session.cwd)continue;const rows=grouped.get(session.cwd)||[];rows.push(session);grouped.set(session.cwd,rows);}let profileCounts=new Map();try{for(const profile of this.profiles.list())profileCounts.set(profile.projectKey,(profileCounts.get(profile.projectKey)||0)+1);}catch{}let inspected=0;for(const [cwd,sessions] of grouped){let worktrees=[];if(inspected<deepLimit){try{worktrees=this.worktrees.inspect(cwd);inspected++;}catch{}}this.projectSummaries.set(cwd,{active:sessions.filter((session)=>[STATUS.RUNNING,STATUS.WAITING].includes(session.status)).length,dirty:worktrees.filter((item)=>item.dirty).length,worktrees:worktrees.length,profiles:profileCounts.get(cwd)||0,branches:new Set(sessions.map((session)=>session.branch).filter(Boolean)).size,lastActivity:Math.max(...sessions.map((session)=>session.updatedAt||0))});} }
 }
 
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }

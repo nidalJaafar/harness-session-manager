@@ -9,6 +9,7 @@ import {HsmDaemon, runDaemon} from './daemon.mjs';
 import {IntelligenceIndex} from './intelligence.mjs';
 import {ProjectProfiles, WorktreeManager} from './projects.mjs';
 import {RagLocator} from './rag.mjs';
+import {DEFAULT_CODEX_DB,DEFAULT_CODEX_LOGS_DB} from './harnesses/codex.mjs';
 
 const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude/settings.json');
 const OPENCODE_PLUGIN = path.join(os.homedir(), '.config/opencode/plugins/hsm.mjs');
@@ -91,8 +92,10 @@ function installHooks() {
 
 export function doctor({store = new StateStore(), dbPath = DEFAULT_OPENCODE_DB} = {}) {
   const checks = [];
-  checks.push(checkCommand('claude'), checkCommand('opencode'), checkCommand('pi'), checkCommand('sqlite3'), checkCommand('bun'));
+  checks.push(checkCommand('claude'), checkCommand('opencode'), checkCommand('pi'), checkCommand('codex'), checkCommand('sqlite3'), checkCommand('bun'));
   checks.push({name: 'OpenCode DB', ok: fs.existsSync(dbPath), detail: dbPath});
+  checks.push({name:'Codex thread store',ok:fs.existsSync(DEFAULT_CODEX_DB),detail:DEFAULT_CODEX_DB});
+  checks.push({name:'Codex live log',ok:fs.existsSync(DEFAULT_CODEX_LOGS_DB),detail:DEFAULT_CODEX_LOGS_DB});
   if (fs.existsSync(dbPath)) {
     try { const result = execFileSync('sqlite3', [dbPath, 'pragma integrity_check;'], {encoding: 'utf8'}).trim(); checks.push({name: 'OpenCode integrity', ok: result === 'ok', detail: result}); } catch (error) { checks.push({name: 'OpenCode integrity', ok: false, detail: error.message}); }
   }

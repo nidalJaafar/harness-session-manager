@@ -100,7 +100,9 @@ function sessionLines(model, width, height) {
     if (row.type === 'folder') {
       const claude = row.sessions.filter((session) => session.harness === 'claude').length;
       const opencode = row.sessions.filter((session) => session.harness === 'opencode').length;
-      const signals = [claude ? `${claude} CC` : '', opencode ? `${opencode} OC` : ''].filter(Boolean).join(' · ');
+      const codex = row.sessions.filter((session) => session.harness === 'codex').length;
+      const pi = row.sessions.filter((session) => session.harness === 'pi').length;
+      const signals = [claude ? `${claude} CC` : '', opencode ? `${opencode} OC` : '',codex?`${codex} CX`:'',pi?`${pi} PI`:''].filter(Boolean).join(' · ');
       const folder = folderParts(row.key);
       const summary = row.summary || {};
       lines.push(fit(`${active ? '❯' : ' '} ${row.collapsed ? '▶' : '▼'} ${folder.name}  (${row.sessions.length})  ${signals}  ${summary.active || 0} active · ${summary.branches || 0} branches · ${summary.worktrees || 0} worktrees · ${summary.profiles || 0} profiles`, width));
@@ -145,8 +147,11 @@ function detailLines(model, width, height) {
     const folder = folderParts(row.key);
     const claude = row.sessions.filter((session) => session.harness === 'claude').length;
     const opencode = row.sessions.filter((session) => session.harness === 'opencode').length;
+    const codex = row.sessions.filter((session) => session.harness === 'codex').length;
+    const pi = row.sessions.filter((session) => session.harness === 'pi').length;
     const summary = row.summary || {};
-    lines.push('', `  ${row.collapsed ? '▶' : '▼'} ${folder.name}`, '', '  PATH', `  ${folder.parent}`, '', '  COCKPIT', `  ${row.sessions.length} sessions · ${summary.active || 0} active`, `  ${summary.branches || 0} branches · ${summary.worktrees || 0} worktrees`, `  ${summary.dirty || 0} dirty · ${summary.profiles || 0} profiles`, '', '  HARNESS MIX', `  ${claude} Claude Code`, `  ${opencode} OpenCode`, '', `  Enter  ${row.collapsed ? 'expand' : 'collapse'}`, `  ${row.collapsed ? '→' : '←'}      ${row.collapsed ? 'expand' : 'collapse'}`);
+    const mix=[[claude,'Claude Code'],[opencode,'OpenCode'],[codex,'Codex'],[pi,'Pi']].filter(([count])=>count).map(([count,name])=>`  ${count} ${name}`);
+    lines.push('', `  ${row.collapsed ? '▶' : '▼'} ${folder.name}`, '', '  PATH', `  ${folder.parent}`, '', '  COCKPIT', `  ${row.sessions.length} sessions · ${summary.active || 0} active`, `  ${summary.branches || 0} branches · ${summary.worktrees || 0} worktrees`, `  ${summary.dirty || 0} dirty · ${summary.profiles || 0} profiles`, '', '  HARNESS MIX', ...mix, '', `  Enter  ${row.collapsed ? 'expand' : 'collapse'}`, `  ${row.collapsed ? '→' : '←'}      ${row.collapsed ? 'expand' : 'collapse'}`);
     return lines.map((line) => fit(line, width));
   }
   const session = row.session;
@@ -333,6 +338,6 @@ function visibleRowEnd(rows, start, lineBudget) {
   }
   return end;
 }
-function badge(harness) { return harness === 'claude' ? '[CC]' : harness === 'opencode' ? '[OC]' : harness === 'pi' ? '[PI]' : '[??]'; }
+function badge(harness) { return harness === 'claude' ? '[CC]' : harness === 'opencode' ? '[OC]' : harness === 'codex' ? '[CX]' : harness === 'pi' ? '[PI]' : '[??]'; }
 function age(time) { const d = Date.now() - Number(time || 0), m = Math.floor(d / 60000); if (m < 1) return 'now'; if (m < 60) return `${m}m`; const h = Math.floor(m / 60); if (h < 24) return `${h}h`; const days = Math.floor(h / 24); return days < 30 ? `${days}d` : `${Math.floor(days / 30)}mo`; }
 function cleanError(error) { return String(error?.stderr || error?.message || error).trim().split('\n').pop().replace(/^Error:\s*/, ''); }

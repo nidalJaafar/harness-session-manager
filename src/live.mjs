@@ -9,8 +9,9 @@ export function scanHarnessProcesses({exec = defaultProcessList} = {}) {
   const found = [];
   for (const row of exec()) {
     const executable = String(row.executable || row.command.split(/\s+/)[0] || '').split('/').pop().toLowerCase();
-    const harness = executable === 'pi' ? 'pi' : executable.includes('opencode') ? 'opencode' : executable.includes('claude') ? 'claude' : '';
+    const harness = executable === 'pi' ? 'pi' : executable.includes('opencode') ? 'opencode' : executable.includes('claude') ? 'claude' : executable === 'codex' ? 'codex' : '';
     if (!harness) continue;
+    if(harness==='codex'&&/\b(?:app-server|mcp-server|exec-server|completion)\b/.test(row.command))continue;
     const id = extractSessionId(row.command, harness);
     found.push({harness, sessionId: id, pid: row.pid, cwd: processCwd(row.pid)});
   }
@@ -53,5 +54,5 @@ function defaultProcessList() {
   }).filter(Boolean);
 }
 function processCwd(pid) { try { return fs.readlinkSync(`/proc/${pid}/cwd`); } catch { return ''; } }
-function extractSessionId(command, harness) { const pattern = harness === 'claude' ? /--resume\s+([\w-]+)/i : harness === 'pi' ? /(?:--session|--session-id)\s+([\w-]+)/i : /(?:-s|--session)\s+([\w-]+)/i; return command.match(pattern)?.[1] || ''; }
+function extractSessionId(command, harness) { const pattern = harness === 'claude' ? /--resume\s+([\w-]+)/i : harness === 'pi' ? /(?:--session|--session-id)\s+([\w-]+)/i : harness==='codex'?/\bresume\s+([\w-]+)/i:/(?:-s|--session)\s+([\w-]+)/i; return command.match(pattern)?.[1] || ''; }
 function samePath(left, right) { try { return fs.realpathSync(left) === fs.realpathSync(right); } catch { return left === right; } }

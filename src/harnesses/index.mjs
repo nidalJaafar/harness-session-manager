@@ -1,11 +1,13 @@
 import {ClaudeAdapter, OpenCodeAdapter} from '../adapters.mjs';
 import {PiAdapter} from './pi.mjs';
+import {CodexAdapter} from './codex.mjs';
 import {HarnessRegistry} from './registry.mjs';
 
 export const builtinHarnesses = [
   {id: 'claude', name: 'Claude Code', create: (context) => new ClaudeAdapter({limit: context.limit})},
   {id: 'opencode', name: 'OpenCode', create: (context) => new OpenCodeAdapter({dbPath: context.dbPath})},
   {id: 'pi', name: 'Pi', create: (context) => new PiAdapter({agentDir: context.piAgentDir, sessionDir: context.piSessionDir})},
+  {id: 'codex', name: 'Codex', create: (context) => new CodexAdapter({codexHome:context.codexHome,dbPath:context.codexDbPath,logsDbPath:context.codexLogsDbPath})},
 ];
 
 export async function createHarnessAdapters({only = '', ...context} = {}) {
