@@ -70,10 +70,18 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Update
 
-Run the one-command installer again, or:
+Run:
 
 ```bash
-git -C ~/.local/share/harness-session-manager pull --ff-only
+hsm update
+```
+
+HSM checks stable `vMAJOR.MINOR.PATCH` tags for a new version in the background and shows an update notice in the TUI footer. The updater requires a clean checkout and only fast-forwards to a published release tag. The one-command installer remains a fallback, or update manually with:
+
+```bash
+git -C ~/.local/share/harness-session-manager fetch --tags origin
+TAG="$(git -C ~/.local/share/harness-session-manager tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)"
+git -C ~/.local/share/harness-session-manager merge --ff-only "$TAG"
 ~/.local/share/harness-session-manager/install.sh
 ```
 

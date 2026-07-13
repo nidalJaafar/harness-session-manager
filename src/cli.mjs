@@ -10,6 +10,7 @@ import {IntelligenceIndex} from './intelligence.mjs';
 import {ProjectProfiles, WorktreeManager} from './projects.mjs';
 import {RagLocator} from './rag.mjs';
 import {DEFAULT_CODEX_DB,DEFAULT_CODEX_LOGS_DB} from './harnesses/codex.mjs';
+import {UpdateManager} from './update.mjs';
 
 const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude/settings.json');
 const OPENCODE_PLUGIN = path.join(os.homedir(), '.config/opencode/plugins/hsm.mjs');
@@ -31,6 +32,7 @@ export async function runSubcommand(args, {store = new StateStore(), stdin = pro
   if (command === 'index') return manageIndex(args.slice(1), store);
   if (command === 'search') return searchIndex(args.slice(1), store);
   if (command === 'ai') return manageAi(args.slice(1), store);
+  if (command === 'update') return manageUpdate(args.slice(1),store);
   return false;
 }
 
@@ -128,6 +130,7 @@ function manageWorktrees(args){const action=args[0]||'inspect',manager=new Workt
 async function manageIndex(args,store){const action=args[0]||'status',index=new IntelligenceIndex(store);if(action==='status'){console.log(JSON.stringify(index.status(),null,2));return true;}if(action==='pause'||action==='resume'){console.log(JSON.stringify(index.pause(action==='pause'),null,2));return true;}if(action==='exclude'){console.log(JSON.stringify(index.exclude(args[1]),null,2));return true;}if(action==='delete'){index.deleteSession(args[1]);console.log(`Deleted local index data for ${args[1]}`);return true;}if(action==='rebuild'){index.clear();const {createHarnessAdapters}=await import('./harnesses/index.mjs');const adapters=await createHarnessAdapters({});const sessions=(await Promise.all(adapters.map((adapter)=>adapter.sessions().catch(()=>[])))).flat();console.log(JSON.stringify(await index.indexSessions(sessions,adapters,{force:true}),null,2));return true;}throw new Error('Usage: hsm index status|rebuild|pause|resume|exclude|delete');}
 function searchIndex(args,store){const query=args.join(' ');if(!query)throw new Error('Usage: hsm search <query>');for(const row of new IntelligenceIndex(store).search(query))console.log(`${row.harness}:${row.sessionId}\t${row.project}\t${row.role}\t${row.snippet}`);return true;}
 async function manageAi(args,store){const action=args[0]||'status',locator=new RagLocator(new IntelligenceIndex(store));if(action==='status'){const configured=store.getKv('ai_provider')||'';console.log(`AI locator: ${locator.provider(configured||undefined)}${configured?' (configured)':' (auto)'}`);return true;}if(action==='provider'){const provider=args[1];locator.provider(provider);store.setKv('ai_provider',provider);console.log(`AI locator provider: ${provider}`);return true;}if(action==='find'){const query=args.slice(1).join(' ');if(!query)throw new Error('Usage: hsm ai find <query>');console.log(JSON.stringify(await locator.find(query,{provider:store.getKv('ai_provider')||undefined}),null,2));return true;}throw new Error('Usage: hsm ai status|provider <claude|pi>|find <query>');}
+async function manageUpdate(args,store){const manager=new UpdateManager(store);if(args[0]==='check'){const info=await manager.check({force:true});console.log(info.available?`HSM ${info.latestVersion} is available. Run: hsm update`:`HSM ${info.currentVersion} is up to date.`);return true;}if(args.length)throw new Error('Usage: hsm update [check]');console.log('Checking for stable HSM releases…');const result=manager.update();console.log(result.updated?`HSM updated: ${result.beforeVersion} → ${result.afterVersion}`:`HSM ${result.afterVersion} is already up to date.`);return true;}
 
 function installClaudeHooks() {
   if (fs.existsSync(CLAUDE_SETTINGS)) backupFile(CLAUDE_SETTINGS);

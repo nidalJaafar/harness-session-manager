@@ -12,6 +12,19 @@ hsm
 
 See [INSTALL.md](INSTALL.md) for requirements, updates, uninstalling, and agent-oriented installation.
 
+## Updates
+
+HSM checks stable Git tags in the background at most once every six hours. When a newer semantic version exists, the bottom status bar shows `HSM 1.2.0 is available · run hsm update`. The check never blocks startup; disable it with `HSM_DISABLE_UPDATE_CHECK=1`.
+
+```bash
+hsm update check   # check immediately
+hsm update         # clean fast-forward, reinstall, and restart the daemon if active
+```
+
+Release tags use `vMAJOR.MINOR.PATCH`, for example `v1.1.0`. Updates refuse to overwrite local modifications or divergent Git history and never install unreleased `master` commits. Installations created through `INSTALL.md` are ordinary Git checkouts, so no privileged system package operation is required.
+
+Installations older than 1.1.0 do not contain the updater and must run the URL installer once. Every release from 1.1.0 onward can use `hsm update`.
+
 ## What HSM does
 
 | Area | Features |

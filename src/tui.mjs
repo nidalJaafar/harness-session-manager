@@ -22,7 +22,7 @@ export function render(model) {
   const headerRight = `${source?.name || 'All harnesses'}  Folders:${folderCount(model)}  Sessions:${model.filtered.length}/${model.sessions.length}${hiddenSubagents ? `  Agents:${model.showSubagents ? 'shown' : `hidden ${hiddenSubagents}`}` : ''}`;
   return [fit(headerLeft + ' '.repeat(Math.max(1, width - headerLeft.length - headerRight.length)) + headerRight, width), '─'.repeat(width), ...body,
     fit(` ${contextLine(model)}`, width),
-    fit(` ${model.status}`, width),
+    fit(` ${model.updateInfo?.available?`↑ HSM ${model.updateInfo.latestVersion} is available · run hsm update`:model.status}`, width),
     fit(`${model.view==='search'?` Esc back   / edit query   A ${model.searchMode==='ai'?'local':'ask AI'}`:' 1/2 views   j/k move   n new   z snooze   l latest   / find session'}   Ctrl+K actions   ? help`, width)].join('\n');
 }
 
@@ -193,6 +193,7 @@ export async function run(model) {
   root.add(screen); renderer.root.add(root);
   const redraw = () => { model.width = renderer.width || 120; model.height = renderer.height || 36; screen.content = styled(render(model), StyledText, colors); renderer.requestRender(); };
   model.onStatus = redraw;
+  void model.checkForUpdates().catch(()=>{});
   renderer.keyInput.on('keypress', (event) => void (async () => { try { const result = await model.key(normalize(event)); if (result === 'quit') return renderer.destroy(); if (result?.type === 'open') { renderer.destroy(); const child = spawnSync(result.command, result.args, {cwd: result.cwd, stdio: 'inherit'}); process.exit(child.status ?? 1); } } catch (error) { model.status = `Action failed: ${cleanError(error)}`; } redraw(); })());
   let refreshPending = false;
   const liveTimer = setInterval(() => { if (refreshPending) return; refreshPending = true; void model.refreshLive().catch((error) => { model.status = `Refresh delayed: ${cleanError(error)}`; }).then(redraw).finally(() => { refreshPending = false; }); }, 2000);

@@ -6,6 +6,7 @@ import {StateStore, sessionKey} from './state.mjs';
 import {IntelligenceIndex} from './intelligence.mjs';
 import {ProjectProfiles, WorktreeManager} from './projects.mjs';
 import {RagLocator} from './rag.mjs';
+import {UpdateManager} from './update.mjs';
 
 export class SessionHubModel {
   constructor({adapters = [], openMode = process.env.HSM_OPEN_MODE || 'terminal', store = new StateStore(), processScanner = scanHarnessProcesses, showSubagents = undefined} = {}) {
@@ -17,6 +18,8 @@ export class SessionHubModel {
     this.profiles = new ProjectProfiles(store);
     this.worktrees = new WorktreeManager();
     this.rag = new RagLocator(this.index);
+    this.updates = new UpdateManager(store);
+    this.updateInfo = this.updates.cached();
     this.width = 120;
     this.height = 36;
     this.focus = 'sessions';
@@ -114,6 +117,8 @@ export class SessionHubModel {
     this.sessions = applyLiveState(this.sessions, this.events, this.safeProcesses());
     this.recompute();
   }
+
+  async checkForUpdates(){this.updateInfo=await this.updates.check();this.onStatus?.();return this.updateInfo;}
 
   recompute() {
     const query = this.query.trim().toLowerCase();
