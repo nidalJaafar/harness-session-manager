@@ -31,10 +31,10 @@ Installations older than 1.1.0 do not contain the updater and must run the URL i
 | --- | --- |
 | Unified sessions | Claude Code, OpenCode, Pi, Codex CLI/Desktop, and external adapters in one normalized queue |
 | Live attention | Running/waiting/failed/stale detection, snoozing, pins, and optional notifications |
-| Project cockpit | Collapsible project trees, Git context, branches, worktrees, launch profiles, and harness counts |
+| Project cockpit | Collapsible project trees, Git context, branches, worktrees, and harness counts |
 | Session control | Start, resume, preview, rename, tag, note, alias, archive, move, hide, and undo where supported |
 | Local intelligence | Private transcript indexing, faceted search, highlighted matches, related sessions, and optional AI retrieval |
-| Orchestration | Confirmed worktree operations and multi-harness tmux profiles with generic-terminal fallback |
+| Orchestration | Confirmed Git worktree creation and safe cleanup |
 | Extensibility | Capability-driven harness plugins without dashboard or TUI changes |
 
 Unsupported native actions remain visible but disabled with an explanation. HSM uses local aliases, tags, and notes when a harness has no equivalent native feature.
@@ -42,10 +42,10 @@ Unsupported native actions remain visible but disabled with an explanation. HSM 
 ## Command Center
 
 - `1 Dashboard` shows Waiting, Running, Pinned, Snoozed, and Recent lanes.
-- `2 Projects` groups sessions into collapsible project cockpits with active-session, branch, worktree, dirty-worktree, and profile signals.
-- `/ Session Finder` searches locally indexed transcripts from either view. Use facets such as `harness:claude`, `project:api`, `branch:main`, and `role:user`. Once Finder displays local results, `Shift+A` becomes available for AI ranking.
+- `2 Projects` groups sessions into collapsible project cockpits with active-session, branch, worktree, and dirty-worktree signals.
+- `/ Session Finder` searches locally indexed transcripts from either view. Press `Tab` to enter Project, Harness, and Branch filters, then type directly into the selected field. Typed filter syntax also works: `project:api`, `harness:claude`, and `branch:main`. Project matching is case-insensitive and also recognizes the session's working-directory path. Once Finder displays local results, `Shift+A` becomes available for AI ranking.
 
-Search is progressive and globally accessible. Press `/` from either view for immediate local retrieval. If the results are insufficient, press `Shift+A` inside Finder to rank the same query with AI. `Shift+A` is intentionally inactive outside Finder.
+Search is progressive and globally accessible. Press `/` from either view, then type directly in Finder while results update underneath. Press `Tab` repeatedly to move through the query, each visible filter field, and the results. Type filter values directly; up/down optionally cycles values already present in the index. If the local results are insufficient, press `Shift+A` while results are focused to rank the same query with AI. `Shift+A` is intentionally inactive outside Finder.
 
 Session status glyphs are consistent across views:
 
@@ -58,7 +58,7 @@ Session status glyphs are consistent across views:
 | `○` | Session is offline or stale |
 | `★` | Session is pinned |
 
-Project rows use readable counters such as `2 active · 3 branches · 4 worktrees · 1 profile`. Select a project to see the same data with its full path and harness breakdown.
+Project rows use readable counters such as `2 active · 3 branches · 4 worktrees`. Select a project to see the same data with its full path and harness breakdown.
 
 Press `Ctrl+K` for every supported action or `?` for the complete keyboard reference.
 
@@ -78,7 +78,18 @@ Press `Ctrl+K` for every supported action or `?` for the complete keyboard refer
 | `u` | Undo the latest supported management action |
 | `r` / `q` | Rescan or quit |
 
-The palette includes session search, latest-session navigation, profile creation/running, worktree inspection/creation, snooze controls, resume/copy/open actions, local metadata, supported native mutations, and session hiding. Worktree creation shows a preview and requires typing `yes`.
+The palette is contextual: global commands are always available, while session commands appear only when a session is selected and the harness supports them. Unsupported and desktop-only actions are omitted rather than displayed disabled.
+
+On the first interactive launch, HSM presents a centered guided-tour card over the real application. Each step explains one part of the interface, blocks unrelated input, waits for the key it is teaching, and then advances through Dashboard, Projects, Finder, contextual actions, resume behavior, new sessions, and organization controls. Press `Esc` to skip when it is not the key being taught; restart the tour later from `?` Help or `Ctrl+K` → `Start the guided tour`.
+
+### Opening sessions locally and over SSH
+
+Pressing `o` always resumes the selected session in the current terminal. HSM suspends its interface, runs the harness with normal terminal input, and returns with refreshed session data when the harness exits.
+
+- `Ctrl+K` offers `Resume in a new terminal window` only in a local graphical session.
+- Over SSH or without a graphical display, that action is omitted because the new window would not be usable.
+- Starting a new session uses a new terminal window locally and the current terminal over SSH or on a headless machine.
+
 
 Subagent and child threads are hidden by default. Press `s`, use the palette, set `HSM_SHOW_SUBAGENTS=1`, or pass `--show-subagents` to include them; the TUI preference is persisted.
 
@@ -115,28 +126,7 @@ hsm daemon status
 
 Snooze state suppresses notifications for the selected session for one hour. The daemon is optional: hooks continue recording events and the TUI remains fully functional without it. Remove it with `hsm daemon remove`.
 
-## Profiles and worktrees
-
-Profiles are local, versioned recipes stored in HSM's state database. They can launch multiple harnesses in tmux panes, with ordinary terminal windows as fallback. Environment values are removed from exported recipes.
-
-```bash
-hsm profile create --root "$PWD" --name api --tmux \
-  --launches '[{"command":"claude"},{"command":"opencode","cwd":"services/api"}]'
-hsm profile list
-hsm profile run api
-hsm profile duplicate api --name 'API experiment'
-hsm profile export api --output api.hsm.json
-hsm profile import api.hsm.json          # preview only
-hsm profile import api.hsm.json --yes    # confirmed import
-```
-
-Edit a profile by exporting it, changing the JSON, and applying it explicitly:
-
-```bash
-hsm profile edit api --file api.hsm.json
-```
-
-A profile can define a project root, preferred base branch, commands, arguments, working subdirectories, environment values, and a tmux layout. Profile configuration is local by default and never writes into a repository automatically.
+## Worktrees
 
 Worktree inspection reports branch, HEAD, detached, missing, merged, and dirty state. Mutation commands return a preview unless `--yes` is supplied. Dirty or actively used worktrees are never removed:
 
@@ -149,10 +139,10 @@ hsm worktree cleanup --root "$PWD" --target ../feature
 
 ## Private local search
 
-HSM stores normalized metadata, events, profiles, undo records, notification state, and indexed messages in `~/.local/state/hsm/hsm.db`. Existing JSON/JSONL state is migrated once and backed up before import.
+HSM stores normalized metadata, events, undo records, notification state, and indexed messages in `~/.local/state/hsm/hsm.db`. Existing JSON/JSONL state is migrated once and backed up before import.
 
 ```bash
-hsm search 'token refresh harness:claude role:assistant'
+hsm search 'token refresh harness:claude branch:main'
 hsm index status
 hsm index pause
 hsm index resume
@@ -197,7 +187,7 @@ HSM 1.0 consolidates its state in `~/.local/state/hsm/hsm.db` using SQLite WAL m
 
 - Pins, aliases, tags, notes, hidden state, and snooze deadlines.
 - UI selections, folder expansion, filters, and the latest resumed session.
-- Normalized lifecycle events, notification deduplication, profiles, transcript indexes, and undo records.
+- Normalized lifecycle events, notification deduplication, transcript indexes, and undo records.
 
 Legacy `state.json`, `events.jsonl`, and undo records are imported once. HSM retains `.pre-sqlite-backup` copies so an interrupted or unwanted migration is recoverable.
 
@@ -217,7 +207,7 @@ npm test
 npm start
 ```
 
-Doctor checks harness executables, Bun, SQLite and the OpenCode database, HSM database integrity/search backend, lifecycle integrations, the optional daemon, notifications, tmux, and process state. Set `HSM_OPEN_MODE=tty` to replace HSM with the selected harness; otherwise HSM launches a new terminal through `$TERMINAL` or `xdg-terminal-exec`.
+Doctor checks harness executables, Bun, SQLite and the OpenCode database, HSM database integrity/search backend, lifecycle integrations, the optional daemon, notifications, and process state.
 
 ## CLI
 
@@ -226,7 +216,6 @@ hsm [--preview] [--db path] [--only claude|opencode|pi|codex]
 hsm event --harness <id> --session <id> --type <type>
 hsm hooks install|remove|status
 hsm daemon install|remove|start|stop|status
-hsm profile list|create|edit|duplicate|export|import|run
 hsm worktree inspect|create|cleanup
 hsm index status|rebuild|pause|resume|exclude|delete
 hsm search <query>

@@ -29,21 +29,34 @@ export class IntelligenceIndex {
   }
   clear() { const table=this.backend()==='fts5'?'messages_fts':'indexed_messages';this.store.exec(`delete from ${table}; delete from indexed_sessions`); }
   deleteSession(key) { const table=this.backend()==='fts5'?'messages_fts':'indexed_messages';this.store.exec(`delete from ${table} where session_key=${quote(key)}; delete from indexed_sessions where session_key=${quote(key)}`); }
-  search(input, limit=100) {
-    const {terms,facets}=parseQuery(input); if (!terms) return [];
-    if(this.backend()!=='fts5')return this.searchLike(terms,facets,limit);
-    const clauses=[`messages_fts match ${quote(ftsExpression(terms))}`];
-    for (const [field,value] of Object.entries(facets)) clauses.push(`${field}=${quote(value)}`);
-    return this.store.query(`select session_key as sessionKey,harness,session_id as sessionId,project,branch,role,snippet(messages_fts,6,'[',']','…',18) as snippet,created_at as createdAt,paths from messages_fts where ${clauses.join(' and ')} order by rank limit ${Number(limit)}`);
+  facetValues(field, limit=40) {
+    if(!['harness','project','branch'].includes(field))return[];
+    if(field==='project'){
+      const values=[];
+      for(const row of this.store.query('select project,cwd from indexed_sessions order by lower(project),lower(cwd)'))for(const value of [row.project,String(row.cwd||'').split(/[\\/]/).filter(Boolean).pop()])if(value&&!values.some((item)=>item.toLowerCase()===value.toLowerCase()))values.push(value);
+      return values.slice(0,Number(limit));
+    }
+    const table=this.backend()==='fts5'?'messages_fts':'indexed_messages';
+    return this.store.query(`select distinct ${field} as value from ${table} where ${field} is not null and ${field}!='' order by lower(${field}) limit ${Number(limit)}`).map((row)=>row.value);
   }
-  searchLike(terms,facets,limit){const words=String(terms).split(/\s+/).filter(Boolean),clauses=words.map((term)=>`lower(content) like ${quote(`%${term.toLowerCase()}%`)}`);for(const [field,value] of Object.entries(facets))clauses.push(`${field}=${quote(value)}`);return this.store.query(`select session_key as sessionKey,harness,session_id as sessionId,project,branch,role,substr(content,1,240) as snippet,created_at as createdAt,paths from indexed_messages where ${clauses.join(' and ')} order by created_at desc limit ${Number(limit)}`).map((row)=>({...row,snippet:highlight(row.snippet,words)}));}
+  search(input, limit=100) {
+    const {terms,facets}=parseQuery(input); if (!terms && !Object.keys(facets).length) return [];
+    if(this.backend()!=='fts5')return this.searchLike(terms,facets,limit);
+    const clauses=terms?[`messages_fts match ${quote(ftsExpression(terms))}`]:[];
+    for (const [field,value] of Object.entries(facets)) clauses.push(facetClause(field,value));
+    const snippet=terms?`snippet(messages_fts,6,'[',']','…',18)`:'substr(content,1,240)';
+    const order=terms?'rank':'created_at desc';
+    return this.store.query(`select session_key as sessionKey,harness,session_id as sessionId,project,branch,role,${snippet} as snippet,created_at as createdAt,paths from messages_fts where ${clauses.join(' and ')} order by ${order} limit ${Number(limit)}`);
+  }
+  searchLike(terms,facets,limit){const words=String(terms).split(/\s+/).filter(Boolean),clauses=words.map((term)=>`instr(lower(content),${quote(term.toLowerCase())})>0`);for(const [field,value] of Object.entries(facets))clauses.push(facetClause(field,value));return this.store.query(`select session_key as sessionKey,harness,session_id as sessionId,project,branch,role,substr(content,1,240) as snippet,created_at as createdAt,paths from indexed_messages where ${clauses.join(' and ')} order by created_at desc limit ${Number(limit)}`).map((row)=>({...row,snippet:highlight(row.snippet,words)}));}
   related(session, limit=8) {
     const key=sessionKey(session);
     const branch=session.branch||'__hsm_no_branch__';return this.store.query(`select session_key as sessionKey,harness,session_id as sessionId,title,project,branch,updated_at as updatedAt,((project=${quote(session.project)})*3+(branch!='' and branch=${quote(branch)})*4+(cwd=${quote(session.cwd)})*2) as score from indexed_sessions where session_key!=${quote(key)} and (project=${quote(session.project)} or branch=${quote(branch)} or cwd=${quote(session.cwd)}) order by score desc,updated_at desc limit ${Number(limit)}`);
   }
 }
 
-export function parseQuery(input) { const facets={}; const allowed=new Set(['harness','project','branch','role']); const rest=[]; for (const token of String(input).match(/(?:[^\s"]+|"[^"]*")+/g)||[]) { const match=token.match(/^(harness|project|branch|role):(.+)$/); if (match&&allowed.has(match[1])) facets[match[1]]=match[2].replace(/^"|"$/g,''); else rest.push(token); } return {terms:rest.join(' ').trim(),facets}; }
+export function parseQuery(input) { const facets={}; const rest=[]; for (const token of String(input).match(/(?:[^\s"]+|"[^"]*")+/g)||[]) { const match=token.match(/^(harness|project|branch):(.+)$/); if (match) facets[match[1]]=match[2].replace(/^"|"$/g,''); else rest.push(token); } return {terms:rest.join(' ').trim(),facets}; }
+function facetClause(field,value){const normalized=quote(String(value).toLowerCase());if(field==='project')return `(instr(lower(project),${normalized})>0 or session_key in (select session_key from indexed_sessions where instr(lower(project),${normalized})>0 or instr(lower(cwd),${normalized})>0))`;return `lower(${field})=${normalized}`;}
 function ftsExpression(terms){return (String(terms).match(/"[^"]+"|[^\s]+/g)||[]).map((term)=>`"${term.replace(/^"|"$/g,'').replaceAll('"','""')}"`).join(' ');}
 function extractPaths(text='') { return [...new Set(String(text).match(/(?:\.?\.?\/)?(?:[\w.-]+\/)+[\w.-]+/g)||[])].slice(0,20); }
 function highlight(text,words){let value=String(text||'');for(const word of words)value=value.replace(new RegExp(escapeRegex(word),'ig'),(match)=>`[${match}]`);return value;}

@@ -89,36 +89,31 @@ test('view selection and pin state persist', async () => {
   assert.equal(restored.metadata('claude:s1').pinned, true);
 });
 
-test('command palette fuzzy-searches actions and sessions and marks unsupported actions', async () => {
+test('command palette fuzzy-searches only actions available for the current context', async () => {
   const {store} = setup();
   const model = new SessionHubModel({adapters: [adapter([fixture()])], store, processScanner: () => []});
-  await model.load(); model.selectedSession = 1;
+  await model.load(); model.selectedSession = model.rows().findIndex((row) => row.session);
   model.paletteQuery = 'rsme';
   assert.equal(model.paletteItems()[0].id, 'resume');
   model.paletteQuery = 'delete';
-  assert.equal(model.paletteItems()[0].enabled, false);
+  assert.equal(model.paletteItems().length, 0);
 });
 
-test('palette explains when a lane is selected instead of a session', async () => {
+test('palette hides session actions when a lane is selected', async () => {
   const {store} = setup();
   const model = new SessionHubModel({adapters: [adapter([fixture()])], store, processScanner: () => []});
   await model.load(); model.selectedSession = 0; model.paletteQuery = 'resume';
   const resume = model.paletteItems().find((item) => item.id === 'resume');
-  assert.equal(resume.enabled, false);
-  assert.equal(resume.reason, 'Select a session row first');
-  model.palette = true; model.paletteQuery = 'resume'; model.paletteIndex = 0;
-  await model.paletteKey('enter');
-  assert.equal(model.palette, true);
-  assert.equal(model.paletteMessage, 'Select a session row first');
+  assert.equal(resume, undefined);
 });
 
-test('palette resume returns a tty launch action', async () => {
+test('palette resume always returns a current-terminal launch action', async () => {
   const {store} = setup();
-  const model = new SessionHubModel({adapters: [adapter([fixture()])], store, processScanner: () => [], openMode: 'tty'});
+  const model = new SessionHubModel({adapters: [adapter([fixture()])], store, processScanner: () => []});
   await model.load();
   model.palette = true; model.paletteQuery = 'resume'; model.paletteIndex = 0;
   const result = await model.paletteKey('enter');
-  assert.deepEqual(result, {type: 'open', command: 'claude', args: ['--resume', 's1'], cwd: process.cwd()});
+  assert.deepEqual(result, {type: 'open', method: 'current', command: 'claude', args: ['--resume', 's1'], cwd: process.cwd(), sessionKey: 'claude:s1', label: 'Claude Code'});
 });
 
 test('hide is confirmed by workflow state and undo restores local visibility', async () => {
@@ -195,7 +190,7 @@ test('question mark opens complete keyboard help and escape closes it', async ()
 
 test('new-session launcher chooses a harness and defaults to the selected project', async () => {
   const {store} = setup();
-  const model = new SessionHubModel({adapters: [adapter([fixture()])], store, processScanner: () => [], openMode: 'tty'});
+  const model = new SessionHubModel({adapters: [adapter([fixture()])], store, processScanner: () => [], environment: {}});
   await model.load();
   model.selectedSession = model.rows().findIndex((row) => row.type === 'session');
   await model.key('n');
@@ -204,12 +199,12 @@ test('new-session launcher chooses a harness and defaults to the selected projec
   assert.equal(model.promptKind, 'new-session');
   assert.equal(model.promptValue, process.cwd());
   const result = await model.key('enter');
-  assert.deepEqual(result, {type: 'open', command: 'claude', args: [], cwd: process.cwd()});
+  assert.deepEqual(result, {type: 'open', method: 'current', command: 'claude', args: [], cwd: process.cwd(), label: 'Claude Code'});
 });
 
 test('new-session launcher rejects a missing working directory', async () => {
   const {store} = setup();
-  const model = new SessionHubModel({adapters: [adapter([])], store, processScanner: () => [], openMode: 'tty'});
+  const model = new SessionHubModel({adapters: [adapter([])], store, processScanner: () => [], environment: {}});
   await model.load();
   model.prompt = true; model.promptKind = 'new-session'; model.pendingAction = 'claude'; model.promptValue = '/definitely/not/a/real/hsm/path';
   assert.equal(await model.key('enter'), undefined);

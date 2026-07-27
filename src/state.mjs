@@ -22,7 +22,6 @@ export class StateStore {
       create index if not exists events_latest on events(harness,session_id,timestamp desc);
       create unique index if not exists events_identity on events(harness,session_id,type,timestamp,coalesce(pid,-1));
       create table if not exists undo(id text primary key,data text not null,created_at integer not null);
-      create table if not exists profiles(id text primary key,project_key text not null,name text not null,data text not null,modified_at integer not null);
       create table if not exists notifications(session_key text primary key,state text not null,event_timestamp integer not null,notified_at integer not null);
       create table if not exists indexed_sessions(session_key text primary key,harness text,session_id text,title text,project text,cwd text,branch text,status text,updated_at integer,indexed_at integer);
       create table if not exists indexed_messages(id integer primary key,session_key text,harness text,session_id text,project text,branch text,role text,content text,created_at integer,paths text);

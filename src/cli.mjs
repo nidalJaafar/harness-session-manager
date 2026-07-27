@@ -7,7 +7,7 @@ import {scanHarnessProcesses} from './live.mjs';
 import {StateStore} from './state.mjs';
 import {HsmDaemon, runDaemon} from './daemon.mjs';
 import {IntelligenceIndex} from './intelligence.mjs';
-import {ProjectProfiles, WorktreeManager} from './projects.mjs';
+import {WorktreeManager} from './projects.mjs';
 import {RagLocator} from './rag.mjs';
 import {DEFAULT_CODEX_DB,DEFAULT_CODEX_LOGS_DB} from './harnesses/codex.mjs';
 import {UpdateManager} from './update.mjs';
@@ -27,7 +27,6 @@ export async function runSubcommand(args, {store = new StateStore(), stdin = pro
   if (command === 'hooks') return manageHooks(args[1]);
   if (command === 'doctor') return doctor({store, dbPath: flag(args, '--db', DEFAULT_OPENCODE_DB)});
   if (command === 'daemon') return manageDaemon(args.slice(1), store);
-  if (command === 'profile') return manageProfiles(args.slice(1), store);
   if (command === 'worktree') return manageWorktrees(args.slice(1));
   if (command === 'index') return manageIndex(args.slice(1), store);
   if (command === 'search') return searchIndex(args.slice(1), store);
@@ -114,7 +113,7 @@ export function doctor({store = new StateStore(), dbPath = DEFAULT_OPENCODE_DB} 
   checks.push({name: 'Local search index', ok: indexStatus.integrity === 'ok', detail: `${indexStatus.backend} · ${indexStatus.sessions} sessions · ${indexStatus.messages} messages`});
   const daemon = new HsmDaemon(store).status();
   checks.push({name: 'Background daemon', ok: true, detail: daemon.installed ? (daemon.active ? 'active' : 'installed, inactive') : 'optional, not installed'});
-  checks.push(checkCommand('notify-send'), checkCommand('tmux'));
+  checks.push(checkCommand('notify-send'));
   console.log('HSM doctor');
   for (const check of checks) console.log(`${check.ok ? '✓' : '!'} ${check.name}: ${check.detail}`);
   return true;
@@ -125,7 +124,6 @@ async function manageDaemon(args, store) {
   const daemon=new HsmDaemon(store); const result=action==='install'?daemon.install():action==='remove'?daemon.remove():action==='start'?daemon.start():action==='stop'?daemon.stop():action==='status'?daemon.status():null;
   if(!result)throw new Error('Usage: hsm daemon install|remove|start|stop|status'); console.log(`HSM daemon: ${result.installed?'installed':'not installed'} · ${result.active?'active':'inactive'}`);return true;
 }
-function manageProfiles(args,store){const action=args[0]||'list';const profiles=new ProjectProfiles(store);if(action==='list'){for(const item of profiles.list(flag(args,'--root','')))console.log(`${item.id}\t${item.name}\t${item.root}`);return true;}if(action==='create'){const root=flag(args,'--root',process.cwd()),name=flag(args,'--name',path.basename(root)),launches=JSON.parse(flag(args,'--launches','[]'));console.log(JSON.stringify(profiles.save({root,name,baseBranch:flag(args,'--base',''),launches,tmux:args.includes('--tmux')?{layout:flag(args,'--layout','tiled')}:null}),null,2));return true;}if(action==='edit'){const current=profiles.get(args[1]);if(!current)throw new Error(`Profile not found: ${args[1]}`);const patch=JSON.parse(fs.readFileSync(flag(args,'--file'),'utf8'));console.log(JSON.stringify(profiles.save({...current,...patch,id:current.id}),null,2));return true;}if(action==='duplicate'){console.log(JSON.stringify(profiles.duplicate(args[1],flag(args,'--name','Copy')),null,2));return true;}if(action==='export'){console.log(profiles.export(args[1],flag(args,'--output',`${args[1]}.hsm.json`)));return true;}if(action==='import'){const result=profiles.import(args[1],{confirm:args.includes('--yes')});console.log(JSON.stringify(result,null,2));return true;}if(action==='run'){console.log(JSON.stringify(profiles.run(args[1],{tmux:!args.includes('--no-tmux')}),null,2));return true;}throw new Error('Usage: hsm profile list|create|edit|duplicate|export|import|run');}
 function manageWorktrees(args){const action=args[0]||'inspect',manager=new WorktreeManager(),root=flag(args,'--root',process.cwd());if(action==='inspect'){console.log(JSON.stringify(manager.inspect(root),null,2));return true;}if(action==='create'){console.log(JSON.stringify(manager.create({root,target:flag(args,'--target'),branch:flag(args,'--branch'),base:flag(args,'--base','HEAD'),confirm:args.includes('--yes')}),null,2));return true;}if(action==='cleanup'){const activeCwds=scanHarnessProcesses().map((item)=>item.cwd).filter(Boolean);console.log(JSON.stringify(manager.cleanup({root,target:flag(args,'--target'),confirm:args.includes('--yes'),activeCwds}),null,2));return true;}throw new Error('Usage: hsm worktree inspect|create|cleanup');}
 async function manageIndex(args,store){const action=args[0]||'status',index=new IntelligenceIndex(store);if(action==='status'){console.log(JSON.stringify(index.status(),null,2));return true;}if(action==='pause'||action==='resume'){console.log(JSON.stringify(index.pause(action==='pause'),null,2));return true;}if(action==='exclude'){console.log(JSON.stringify(index.exclude(args[1]),null,2));return true;}if(action==='delete'){index.deleteSession(args[1]);console.log(`Deleted local index data for ${args[1]}`);return true;}if(action==='rebuild'){index.clear();const {createHarnessAdapters}=await import('./harnesses/index.mjs');const adapters=await createHarnessAdapters({});const sessions=(await Promise.all(adapters.map((adapter)=>adapter.sessions().catch(()=>[])))).flat();console.log(JSON.stringify(await index.indexSessions(sessions,adapters,{force:true}),null,2));return true;}throw new Error('Usage: hsm index status|rebuild|pause|resume|exclude|delete');}
 function searchIndex(args,store){const query=args.join(' ');if(!query)throw new Error('Usage: hsm search <query>');for(const row of new IntelligenceIndex(store).search(query))console.log(`${row.harness}:${row.sessionId}\t${row.project}\t${row.role}\t${row.snippet}`);return true;}

@@ -33,13 +33,13 @@ test('filters by harness and searches across normalized fields', async () => {
 });
 
 test('renders harness identity and returns native resume action', async () => {
-  const model = new SessionHubModel({adapters: [adapter('claude', [claude]), adapter('opencode', [opencode])], openMode: 'tty', store: testStore(), processScanner: () => []});
+  const model = new SessionHubModel({adapters: [adapter('claude', [claude]), adapter('opencode', [opencode])], store: testStore(), processScanner: () => []});
   await model.load(); model.setView('browser'); model.focus = 'sessions';
   assert.equal(model.selectedRow().type, 'folder');
   await model.key('enter');
   await model.key('down');
   assert.match(render(model), /\[OC\] Ship dashboard/);
-  assert.deepEqual(model.openSelected(), {type: 'open', command: 'opencode', args: ['-s', 'o1'], cwd: process.cwd()});
+  assert.deepEqual(model.openSelected(), {type: 'open', method: 'current', command: 'opencode', args: ['-s', 'o1'], cwd: process.cwd(), sessionKey: 'opencode:o1', label: 'OpenCode'});
 });
 
 test('adapter failure does not hide healthy harnesses', async () => {

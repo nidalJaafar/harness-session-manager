@@ -1,21 +1,20 @@
 import fs from 'node:fs';
-import {execFileSync, spawn} from 'node:child_process';
 import {loadAll} from './adapters.mjs';
 import {applyLiveState, scanHarnessProcesses, STATUS} from './live.mjs';
 import {StateStore, sessionKey} from './state.mjs';
 import {IntelligenceIndex} from './intelligence.mjs';
-import {ProjectProfiles, WorktreeManager} from './projects.mjs';
+import {WorktreeManager} from './projects.mjs';
 import {RagLocator} from './rag.mjs';
 import {UpdateManager} from './update.mjs';
+import {canOpenTerminalWindow, newSessionLaunchMethod} from './launch.mjs';
 
 export class SessionHubModel {
-  constructor({adapters = [], openMode = process.env.HSM_OPEN_MODE || 'terminal', store = new StateStore(), processScanner = scanHarnessProcesses, showSubagents = undefined} = {}) {
+  constructor({adapters = [], environment = process.env, store = new StateStore(), processScanner = scanHarnessProcesses, showSubagents = undefined} = {}) {
     this.adapters = adapters;
-    this.openMode = openMode;
     this.store = store;
+    this.environment = environment;
     this.processScanner = processScanner;
     this.index = new IntelligenceIndex(store);
-    this.profiles = new ProjectProfiles(store);
     this.worktrees = new WorktreeManager();
     this.rag = new RagLocator(this.index);
     this.updates = new UpdateManager(store);
@@ -44,7 +43,10 @@ export class SessionHubModel {
     this.searchResults = [];
     this.aiResults = [];
     this.searchMode = 'local';
-    this.finderPromptMode = 'local';
+    this.finderFocus = 'query';
+    this.finderText = '';
+    this.finderFilters = {project:'',harness:'',branch:''};
+    this.finderFilterIndex = 0;
     this.aiProvider = '';
     this.projectSummaries = new Map();
     this.relatedCache = new Map();
@@ -54,9 +56,11 @@ export class SessionHubModel {
     this.paletteIndex = 0;
     this.paletteMessage = '';
     this.help = false;
+    this.onboarding = false;
+    this.onboardingStep = 0;
     this.launcher = false;
     this.launcherIndex = 0;
-    this.promptKind = 'search';
+    this.promptKind = '';
     this.pendingAction = null;
     this.lastDiscoveryRefresh = 0;
     this.status = 'Discovering sessions…';
@@ -129,15 +133,21 @@ export class SessionHubModel {
   }
 
   async key(key) {
-    if (this.help) { if (key === '?' || key === 'esc' || key === 'q' || key === 'ctrl+c') this.help = false; return; }
+    if (this.onboarding) {
+      const expected = ONBOARDING_KEYS[this.onboardingStep];
+      if (key === 'esc' && expected !== 'esc') { this.finishOnboarding('Tour ended · restart it from Help or Ctrl+K'); return; }
+      if (key !== expected) return;
+      if (key === 'enter') { this.advanceOnboarding(key); return; }
+    }
+    if (this.help) { if (key === 't') { this.help = false; this.startOnboarding(true); } else if (key === '?' || key === 'esc' || key === 'q' || key === 'ctrl+c') this.help = false; return; }
     if (this.launcher) return this.launcherKey(key);
-    if (this.palette) return this.paletteKey(key);
+    if (this.palette) { const result=await this.paletteKey(key);if(this.onboarding)this.advanceOnboarding(key);return result; }
     if (this.prompt) return this.promptKey(key);
+    if (this.view === 'search') { const result=await this.finderKey(key);if(this.onboarding)this.advanceOnboarding(key);return result; }
     if (key === 'q' || key === 'ctrl+c') return 'quit';
     if (key === '?') this.help = true;
     else if (key === '1') this.setView('dashboard');
     else if (key === '2') this.setView('projects');
-    else if (key === 'A' && this.view === 'search') await this.openGlobalSessionFinder('ai');
     else if (key === 'ctrl+k') this.openPalette();
     else if (key === 'n') this.openLauncher();
     else if (key === 'tab' || key === 'f') this.cycleSource();
@@ -145,7 +155,7 @@ export class SessionHubModel {
     else if (key === 'k' || key === 'up') this.move(-1);
     else if (key === 'pageup') this.move(-10);
     else if (key === 'pagedown') this.move(10);
-    else if (key === '/') { if(this.view==='search'){this.prompt=true;this.promptKind='search';this.promptValue=this.query;this.finderPromptMode='local';}else this.openSessionFinder(true,'local'); }
+    else if (key === '/') this.openSessionFinder(false,'local');
     else if (key === 'r') await this.load();
     else if (key === 'g') { this.viewMode = this.viewMode === 'folders' ? 'recent' : 'folders'; this.selectedSession = 0; this.scroll = 0; this.preview = []; this.recompute(); this.status = this.viewMode === 'folders' ? 'Grouped by working folder' : 'Showing global recent activity'; }
     else if (key === 'enter') {
@@ -164,8 +174,8 @@ export class SessionHubModel {
     else if (key === 's') this.toggleSubagents();
     else if (key === 'u') await this.undoLatest();
     else if (key === 'h') this.status = this.commandHint();
-    else if (key === 'esc' && this.view === 'search') this.closeSessionFinder();
     else if (key === 'esc' && this.preview.length) { this.preview = []; this.status = 'Preview closed'; }
+    if (this.onboarding) this.advanceOnboarding(key);
   }
 
   async promptKey(key) {
@@ -173,14 +183,56 @@ export class SessionHubModel {
     if (key === 'enter') {
       this.prompt = false;
       const value = this.promptValue.trim();
-      if (this.promptKind === 'search') { this.query = value; this.store.setUi({finderQuery: value}); this.selectedSession = 0; this.preview = []; this.runLocalSearch(); this.status = value ? `Local results: ${value}` : 'Finder query cleared'; if(value&&this.finderPromptMode==='ai'){this.finderPromptMode='local';return this.askAiToLocate();}this.finderPromptMode='local'; }
-      else return this.completePrompt(value);
-      return;
+      return this.completePrompt(value);
     }
     if (key === 'backspace') this.promptValue = this.promptValue.slice(0, -1);
     else if (key === 'space') this.promptValue += ' ';
     else if (key.length === 1) this.promptValue += key;
   }
+
+  async finderKey(key) {
+    if(key==='ctrl+c')return'quit';
+    if(key==='esc'){this.closeSessionFinder();return;}
+    if(key==='/'){this.finderFocus='query';return;}
+    if(key==='tab'){
+      if(this.finderFocus==='query'){this.finderFocus='filters';this.finderFilterIndex=0;}
+      else if(this.finderFocus==='filters'&&this.finderFilterIndex<FINDER_FILTERS.length-1)this.finderFilterIndex++;
+      else if(this.finderFocus==='filters')this.finderFocus='results';
+      else this.finderFocus='query';
+      return;
+    }
+    if(this.finderFocus==='query'){
+      if(key==='enter'||key==='down'){this.finderFocus='results';return;}
+      if(key==='backspace')this.finderText=this.finderText.slice(0,-1);
+      else if(key==='space')this.finderText+=' ';
+      else if(key.length===1)this.finderText+=key;
+      else return;
+      this.updateFinderQuery();return;
+    }
+    if(this.finderFocus==='filters'){
+      const field=FINDER_FILTERS[this.finderFilterIndex];
+      if(key==='backspace'){this.finderFilters[field]=this.finderFilters[field].slice(0,-1);this.updateFinderQuery();}
+      else if(key==='space'){this.finderFilters[field]+=' ';this.updateFinderQuery();}
+      else if(key==='up')this.cycleFinderFilter(-1);
+      else if(key==='down')this.cycleFinderFilter(1);
+      else if(key==='enter')this.finderFocus='results';
+      else if(key.length===1){this.finderFilters[field]+=key;this.updateFinderQuery();}
+      return;
+    }
+    if(key==='A')return this.toggleAiSearch();
+    if(key==='ctrl+k'){this.openPalette();return;}
+    if(key==='?'){this.help=true;return;}
+    if(key==='j'||key==='down')this.move(1);
+    else if(key==='k'||key==='up')this.move(-1);
+    else if(key==='pageup')this.move(-10);
+    else if(key==='pagedown')this.move(10);
+    else if(key==='enter'||key==='v')await this.previewSelected();
+    else if(key==='o')return this.openSelected();
+  }
+
+  finderFilterOptions(field){return['',...this.index.facetValues(field)];}
+  cycleFinderFilter(delta){const field=FINDER_FILTERS[this.finderFilterIndex],options=this.finderFilterOptions(field),current=Math.max(0,options.indexOf(this.finderFilters[field])),next=(current+delta+options.length)%options.length;this.finderFilters[field]=options[next];this.updateFinderQuery();}
+  updateFinderQuery(){const filters=FINDER_FILTERS.filter((field)=>this.finderFilters[field]).map((field)=>`${field}:${quoteSearchValue(this.finderFilters[field])}`);this.query=[this.finderText.trim(),...filters].filter(Boolean).join(' ');this.store.setUi({finderQuery:this.query});this.preview=[];this.runLocalSearch();this.status=this.query?`Local results: ${this.query}`:'Type to search, or Tab to choose filters';}
 
   move(delta) {
     if (this.focus === 'sources') {
@@ -219,21 +271,17 @@ export class SessionHubModel {
     this.status = this.preview.length ? `Previewing ${session.harnessName} session` : `No message preview available · ${this.commandHint()}`;
   }
 
-  openSelected() {
+  openSelected(method = 'current') {
     const session = this.selected();
     if (!session) return;
-    return this.launchSession(session);
+    return this.launchSession(session, method);
   }
 
-  launchSession(session) {
+  launchSession(session, method = 'current') {
     const cwd = session.cwd && fs.existsSync(session.cwd) ? session.cwd : process.cwd();
     this.store.updateSession(sessionKey(session), {lastOpenedAt: Date.now()});
     this.store.setUi({latestSession: sessionKey(session)});
-    if (this.openMode === 'tty') return {type: 'open', ...session.resume, cwd};
-    const [terminal, ...terminalArgs] = (process.env.TERMINAL || 'xdg-terminal-exec').split(/\s+/);
-    const child = spawn(terminal, [...terminalArgs, session.resume.command, ...session.resume.args], {cwd, detached: true, stdio: 'ignore'});
-    child.unref();
-    this.status = `Launched ${session.harnessName} · ${this.commandHint()}`;
+    return {type: 'open', method, ...session.resume, cwd, sessionKey: sessionKey(session), label: session.harnessName};
   }
 
   queueRows() {
@@ -296,65 +344,61 @@ export class SessionHubModel {
   openPalette() { this.palette = true; this.paletteQuery = ''; this.paletteIndex = 0; this.paletteMessage = ''; }
   paletteItems() {
     const session = this.selected();
-    const root = this.selectedProjectRoot();
-    const profiles = root ? this.profiles.list(root) : [];
-    const selectReason = 'Select a session row first';
     const actions = [
-      action('new-session', 'New session…', this.launchableAdapters().length > 0, 'No installed harness declares new-session support'), action('search-index','Search local transcripts…',true), action('ai-locate',this.searchMode==='ai'?'Show local search results':'Ask AI to locate session',Boolean(this.view==='search'&&this.query),'Open Search and enter a query first'), action('profile-create','Create launch profile…',Boolean(root),'Select a project or session first'), action('profile-run',profiles.length?`Run profile: ${profiles[0].name}`:'Run project profile',profiles.length>0,root?'Project has no launch profile':'Select a project first'), action('worktree-inspect','Inspect project worktrees',Boolean(root),'Select a project first'), action('worktree-create','Create Git worktree…',Boolean(root),'Select a project first'), action('latest-session', 'Go to latest session', Boolean(this.store.state.ui?.latestSession || this.store.state.ui?.mission), 'No latest session'), action('snooze', 'Snooze for one hour', Boolean(session), selectReason), action('wake', 'Wake now', Boolean(session?.local?.snoozedUntil), session ? 'Session is not snoozed' : selectReason), action('subagents', this.showSubagents ? 'Hide subagent threads' : 'Show subagent threads', true), action('continue', 'Continue where I left off', Boolean(this.continueSession())), action('resume', 'Resume session', Boolean(session), selectReason), action('pin', session?.local.pinned ? 'Unpin session' : 'Pin session', Boolean(session), selectReason),
-      action('alias', 'Set local alias', Boolean(session), selectReason), action('tag', 'Set session tag', Boolean(session), selectReason), action('note', 'Add note', Boolean(session), selectReason), action('copy', 'Copy resume command', Boolean(session), selectReason),
-      action('folder', 'Open working folder', Boolean(session?.cwd), session ? 'Session has no working folder' : selectReason), action('editor', 'Open in editor', Boolean(session?.cwd), session ? 'Session has no working folder' : selectReason),
-      action('rename', 'Rename session', Boolean(session?.capabilities?.rename), session ? 'Harness does not support rename' : selectReason), action('move', 'Move to OpenCode project', Boolean(session?.capabilities?.move), session ? 'Only OpenCode sessions can move projects' : selectReason), action('archive', 'Archive session', Boolean(session?.capabilities?.archive), session ? 'Local hide is available instead' : selectReason),
-      action('hide', 'Hide from HSM', Boolean(session), selectReason), action('delete', 'Delete session', Boolean(session?.capabilities?.delete), session ? 'Harness does not support safe deletion' : selectReason),
+      action('new-session', 'Start a new session', this.launchableAdapters().length > 0),
+      action('search-index','Find a session',true),
+      action('subagents', this.showSubagents ? 'Hide child-agent sessions' : 'Show child-agent sessions', true),
+      action('onboarding', 'Start the guided tour', true),
+      ...(this.store.state.ui?.latestSession || this.store.state.ui?.mission ? [action('latest-session', 'Go to last resumed session', true)] : []),
+      ...(this.view==='search'&&this.query ? [action('ai-locate',this.searchMode==='ai'?'Show local search results':'Ask AI to rank these results',true)] : []),
+      ...(session ? [
+        action('resume', 'Resume in this terminal', true),
+        ...(canOpenTerminalWindow(this.environment) ? [action('resume-window', 'Resume in a new terminal window', true)] : []),
+        action('pin', session.local?.pinned ? 'Unpin session' : 'Pin session', true),
+        action(session.local?.snoozedUntil ? 'wake' : 'snooze', session.local?.snoozedUntil ? 'Wake session notifications' : 'Snooze notifications for one hour', true),
+        action('alias', 'Set local alias', true), action('tag', 'Set session tag', true), action('note', 'Add local note', true),
+        ...(session.capabilities?.rename ? [action('rename', 'Rename session', true)] : []),
+        ...(session.capabilities?.archive ? [action('archive', 'Archive session', true)] : []),
+        action('hide', 'Hide session from HSM', true),
+      ] : []),
     ];
-    const sessions = this.sessions.filter((item) => (this.showSubagents || !item.isSubagent) && (this.source === 'all' || item.harness === this.source)).slice(0, 100).map((item) => ({id: `jump:${sessionKey(item)}`, label: `${item.local.alias || item.title} · ${item.harnessName}`, enabled: true, session: item}));
     const query = this.paletteQuery.toLowerCase();
-    return [...actions, ...sessions].filter((item) => fuzzy(item.label.toLowerCase(), query)).sort((a, b) => fuzzyScore(b.label.toLowerCase(), query) - fuzzyScore(a.label.toLowerCase(), query));
+    return actions.filter((item) => fuzzy(item.label.toLowerCase(), query)).sort((a, b) => fuzzyScore(b.label.toLowerCase(), query) - fuzzyScore(a.label.toLowerCase(), query));
   }
   async paletteKey(key) { if (key === 'esc' || key === 'ctrl+c') { this.palette = false; return; } const items = this.paletteItems(); if (key === 'up') { this.paletteIndex = clamp(this.paletteIndex - 1, 0, Math.max(0, items.length - 1)); this.paletteMessage = ''; } else if (key === 'down') { this.paletteIndex = clamp(this.paletteIndex + 1, 0, Math.max(0, items.length - 1)); this.paletteMessage = ''; } else if (key === 'backspace') { this.paletteQuery = this.paletteQuery.slice(0, -1); this.paletteIndex = 0; this.paletteMessage = ''; } else if (key === 'enter') { const item = items[this.paletteIndex]; if (!item?.enabled) { this.paletteMessage = item.reason || 'This action is unavailable for the current selection.'; this.status = this.paletteMessage; } else return this.runPaletteAction(item); } else if (key.length === 1) { this.paletteQuery += key; this.paletteIndex = 0; this.paletteMessage = ''; } }
   async runPaletteAction(item) {
     this.palette = false;
-    if (item.session) { this.setView('projects'); this.query = item.session.id; this.recompute(); return; }
     if (item.id === 'new-session') return this.openLauncher();
     if (item.id === 'search-index') { this.openSessionFinder(); return; }
     if (item.id === 'ai-locate') return this.toggleAiSearch();
-    if (item.id === 'profile-create') { this.prompt = true; this.promptKind = 'profile'; this.promptValue = `${this.selected()?.project || 'project'} workspace`; return; }
-    if (item.id === 'profile-run') { const profile = this.profiles.list(this.selectedProjectRoot())[0]; const result = this.profiles.run(profile.id); this.status = `Launched ${profile.name} with ${result.backend}`; return; }
-    if (item.id === 'worktree-inspect') { const rows = this.worktrees.inspect(this.selectedProjectRoot()); this.status = `${rows.length} worktrees · ${rows.filter((row) => row.dirty).length} dirty · ${rows.filter((row) => row.merged).length} merged`; return; }
-    if (item.id === 'worktree-create') { const root = this.selectedProjectRoot(); this.prompt = true; this.promptKind = 'worktree'; this.promptValue = `feature ../${pathName(root)}-feature`; return; }
+    if (item.id === 'onboarding') return this.startOnboarding(true);
     if (item.id === 'latest-session') return this.returnToLatestSession();
     if (item.id === 'snooze') return this.snoozeSelected(60 * 60 * 1000);
     if (item.id === 'wake') return this.wakeSelected();
-    if (item.id === 'continue') return this.openSession(this.continueSession());
     if (item.id === 'subagents') return this.toggleSubagents();
     if (item.id === 'resume') return this.openSelected();
+    if (item.id === 'resume-window') return this.openSelected('window');
     if (item.id === 'pin') return this.togglePin();
     if (['alias', 'tag', 'note', 'rename', 'move'].includes(item.id)) {
       this.prompt = true; this.promptKind = item.id;
       this.promptValue = item.id === 'alias' ? this.selected().local.alias || '' : item.id === 'tag' ? this.selected().tag || this.selected().local.tag || '' : item.id === 'note' ? this.selected().local.note || '' : item.id === 'rename' ? this.selected().title : '';
       return;
     }
-    if (['archive', 'delete', 'hide'].includes(item.id)) { this.prompt = true; this.promptKind = 'confirm'; this.promptValue = ''; this.pendingAction = item.id; this.status = `Type yes to ${item.id} ${this.selected().title}`; return; }
-    if (item.id === 'copy') return this.copyCommand();
-    if (item.id === 'folder' || item.id === 'editor') return this.openPath(item.id);
+    if (['archive', 'hide'].includes(item.id)) { this.prompt = true; this.promptKind = 'confirm'; this.promptValue = ''; this.pendingAction = item.id; this.status = `Type yes to ${item.id} ${this.selected().title}`; return; }
   }
   async completePrompt(value) {
     if (this.promptKind === 'new-session') return this.launchNewSession(this.pendingAction, value);
-    if (this.promptKind === 'worktree') { const [branch, target] = value.split(/\s+/, 2); if (!branch || !target) { this.status = 'Enter: <new-branch> <target-path>'; return; } const data = {root:this.selectedProjectRoot(),branch,target}; const result=this.worktrees.create(data); this.pendingAction={kind:'worktree-create',data}; this.prompt=true;this.promptKind='confirm';this.promptValue='';this.status=`Type yes to create ${result.preview.target} from ${branch}`;return; }
-    if (this.promptKind === 'profile') { const session=this.selected();const adapter=session&&this.adapters.find((item)=>item.id===session.harness);const launch=adapter?.newSession||{command:session?.resume?.command||'sh',args:[]};const profile=this.profiles.save({name:value,root:this.selectedProjectRoot(),launches:[{command:launch.command,args:launch.args||[]}],tmux:{layout:'tiled'}});this.refreshProjectSummaries();this.status=`Created profile ${profile.name}`;return; }
-    if (this.promptKind === 'confirm' && this.pendingAction?.kind === 'worktree-create') { if(value!=='yes'){this.status='Action cancelled';return;}const result=this.worktrees.create({...this.pendingAction.data,confirm:true});this.pendingAction=null;this.status=`Created worktree ${result.target}`;return; }
     const session = this.selected(); if (!session) return;
     const adapter = this.adapters.find((item) => item.id === session.harness);
     if (this.promptKind === 'alias' || this.promptKind === 'note') { this.store.updateSession(sessionKey(session), {[this.promptKind]: value}); session.local[this.promptKind] = value; this.recordAction(session, `${this.promptKind}-updated`); this.status = `Saved local ${this.promptKind}`; return; }
     if (this.promptKind === 'tag') { if (session.capabilities?.tag && adapter.tag) { await adapter.tag(session, value); session.tag = value; } else { this.store.updateSession(sessionKey(session), {tag: value}); session.local.tag = value; } this.recordAction(session, 'tagged', value); this.status = `Tagged ${session.title} as ${value}`; return; }
     if (this.promptKind === 'rename') { await adapter.rename(session, value); this.store.recordUndo({type: 'rename', session: sessionKey(session), before: session.title, after: value}); this.recordAction(session, 'renamed', value); session.title = value; this.status = `Renamed to ${value}`; return; }
-    if (this.promptKind === 'move') { const result = await adapter.move(session, value); this.store.recordUndo({type: 'move', session: sessionKey(session), before: session.projectId, after: result.project.id, backupPath: result.backupPath}); this.recordAction(session, 'moved', result.project.name || result.project.id); this.status = `Moved to ${result.project.name || result.project.worktree}`; return this.load(); }
     if (this.promptKind === 'confirm') { if (value !== 'yes') { this.status = 'Action cancelled'; return; } await this.destructiveAction(this.pendingAction, session); }
   }
   async destructiveAction(kind, session) {
     if (kind === 'hide') { this.store.updateSession(sessionKey(session), {hidden: true}); this.store.recordUndo({type: 'hide', session: sessionKey(session)}); this.recordAction(session, 'hidden'); this.status = `Hidden ${session.title}`; return this.load(); }
     const adapter = this.adapters.find((item) => item.id === session.harness);
     if (kind === 'archive') { const result = await adapter.archive(session); this.store.recordUndo({type: 'archive', session: sessionKey(session), backupPath: result.backupPath}); this.recordAction(session, 'archived'); this.status = `Archived ${session.title}`; return this.load(); }
-    if (kind === 'delete') this.status = 'Delete is disabled because this adapter cannot provide session-scoped undo.';
   }
   async undoLatest() {
     const undo = this.store.latestUndo(); if (!undo) { this.status = 'Nothing to undo'; return; }
@@ -368,36 +412,38 @@ export class SessionHubModel {
     else { this.status = 'Latest action cannot be undone in the current session'; return; }
     this.status = `Undid ${undo.type}`; await this.load();
   }
-  copyCommand() { const command = this.commandHint(); try { execFileSync('wl-copy', [], {input: command}); this.status = 'Resume command copied'; } catch { this.status = command; } }
-  openPath(kind) { const session = this.selected(); const command = kind === 'editor' ? (process.env.EDITOR || 'code') : 'xdg-open'; const child = spawn(command, [session.cwd], {detached: true, stdio: 'ignore'}); child.unref(); this.status = `Opened ${session.cwd}`; }
   recordAction(session, type, message = '') { const event = this.store.appendEvent({harness: session.harness, sessionId: session.id, type, timestamp: Date.now(), cwd: session.cwd, message}); this.events.unshift(event); }
-  continueSession() { return [...this.sessions].filter((session) => this.showSubagents || !session.isSubagent).sort((a, b) => Number(b.local.lastOpenedAt || 0) - Number(a.local.lastOpenedAt || 0) || b.updatedAt - a.updatedAt)[0] || null; }
-  openSession(session) { return session ? this.launchSession(session) : undefined; }
   launchableAdapters() { return this.adapters.filter((adapter) => adapter.available() && adapter.newSession?.command); }
   openLauncher() { this.palette = false; this.launcher = true; this.launcherIndex = 0; this.status = 'Choose a harness for the new session'; }
   launcherKey(key) { const adapters = this.launchableAdapters(); if (key === 'esc' || key === 'ctrl+c') { this.launcher = false; return; } if (key === 'up' || key === 'k') this.launcherIndex = clamp(this.launcherIndex - 1, 0, Math.max(0, adapters.length - 1)); else if (key === 'down' || key === 'j') this.launcherIndex = clamp(this.launcherIndex + 1, 0, Math.max(0, adapters.length - 1)); else if (key === 'enter') { const adapter = adapters[this.launcherIndex]; if (!adapter) return; this.launcher = false; this.prompt = true; this.promptKind = 'new-session'; this.pendingAction = adapter.id; this.promptValue = this.defaultLaunchCwd(); } }
   defaultLaunchCwd() { const row = this.selectedRow(); if (row?.session?.cwd) return row.session.cwd; if (row?.type === 'folder' && row.key !== 'Unknown folder') return row.key; return process.cwd(); }
-  launchNewSession(harness, cwdValue) { const adapter = this.adapters.find((item) => item.id === harness); if (!adapter?.newSession) throw new Error(`Harness cannot create sessions: ${harness}`); const cwd = String(cwdValue || '').replace(/^~(?=\/|$)/, process.env.HOME || ''); if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) { this.status = `Working directory does not exist: ${cwd}`; return; } const launch = adapter.newSession; this.pendingAction = null; if (this.openMode === 'tty') return {type: 'open', command: launch.command, args: [...(launch.args || [])], cwd}; const [terminal, ...terminalArgs] = (process.env.TERMINAL || 'xdg-terminal-exec').split(/\s+/); const child = spawn(terminal, [...terminalArgs, launch.command, ...(launch.args || [])], {cwd, detached: true, stdio: 'ignore'}); child.unref(); this.status = `Started a new ${adapter.name} session in ${cwd}`; }
-  selectedProjectRoot() { const row=this.selectedRow();return row?.session?.cwd||row?.key||''; }
+  launchNewSession(harness, cwdValue) { const adapter = this.adapters.find((item) => item.id === harness); if (!adapter?.newSession) throw new Error(`Harness cannot create sessions: ${harness}`); const cwd = String(cwdValue || '').replace(/^~(?=\/|$)/, this.environment.HOME || ''); if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) { this.status = `Working directory does not exist: ${cwd}`; return; } const launch = adapter.newSession; this.pendingAction = null; return {type:'open',method:newSessionLaunchMethod(this.environment),command:launch.command,args:[...(launch.args||[])],cwd,label:adapter.name}; }
   runLocalSearch() { this.searchMode='local';this.aiResults=[];this.searchResults = this.query ? this.index.search(this.query) : []; this.selectedSession = 0; this.scroll = 0; }
   async askAiToLocate() { if(!this.query){this.status='Enter a local search query first';return;}const preferred=this.store.getKv('ai_provider')||undefined,preview=this.rag.preview(this.query,{provider:preferred});this.status=`Asking ${preview.provider} to rank ${preview.candidateCount} redacted candidates…`;this.onStatus?.();const result=await this.rag.find(this.query,{provider:preview.provider});this.aiProvider=result.provider;this.aiResults=result.matches;this.searchMode='ai';this.selectedSession=0;this.scroll=0;this.status=result.matches.length?`${result.provider} found ${result.matches.length} evidence-backed matches`:(result.message||`${result.provider} found no supported match`); }
   async toggleAiSearch() { if(this.searchMode==='ai'){this.searchMode='local';this.selectedSession=0;this.scroll=0;this.status='Showing local search results';return;}return this.askAiToLocate(); }
-  openSessionFinder(prompt=true,mode='local') { if(this.view!=='search'){this.finderReturnView=this.view;this.finderReturnQuery=this.query;}this.view='search';this.query='';this.runLocalSearch();this.finderPromptMode=mode;if(prompt){this.prompt=true;this.promptKind='search';this.promptValue='';}this.status=mode==='ai'?'Describe the session for AI retrieval':'Search all session content'; }
+  openSessionFinder(_prompt=true,_mode='local') { if(this.view!=='search'){this.finderReturnView=this.view;this.finderReturnQuery=this.query;}this.view='search';this.query='';this.finderText='';this.finderFilters={project:'',harness:'',branch:''};this.finderFilterIndex=0;this.finderFocus='query';this.runLocalSearch();this.status='Type to search · Tab selects filters'; }
   closeSessionFinder() { this.view=this.finderReturnView||'dashboard';this.query=this.finderReturnQuery||'';this.searchResults=[];this.aiResults=[];this.searchMode='local';this.selectedSession=Number(this.store.state.ui?.selections?.[this.view]||0);this.scroll=0;this.recompute();this.status=`Returned to ${this.view}`; }
-  async openGlobalSessionFinder(mode='ai') { if(this.view!=='search')return this.openSessionFinder(true,mode);if(!this.query){this.prompt=true;this.promptKind='search';this.promptValue='';this.finderPromptMode=mode;return;}return this.toggleAiSearch(); }
+  async openGlobalSessionFinder(mode='ai') { if(this.view!=='search')return this.openSessionFinder(false,mode);if(!this.query){this.finderFocus='query';this.status='Type a search before asking AI';return;}return this.toggleAiSearch(); }
   relatedSelected() { const session=this.selected();if(!session)return[];const key=`${sessionKey(session)}:${session.updatedAt||0}`;if(!this.relatedCache.has(key))this.relatedCache.set(key,this.index.related(session));return this.relatedCache.get(key); }
-  refreshProjectSummaries(deepLimit=8) { this.projectSummaries.clear();const grouped=new Map();for(const session of this.sessions){if(!session.cwd)continue;const rows=grouped.get(session.cwd)||[];rows.push(session);grouped.set(session.cwd,rows);}let profileCounts=new Map();try{for(const profile of this.profiles.list())profileCounts.set(profile.projectKey,(profileCounts.get(profile.projectKey)||0)+1);}catch{}let inspected=0;for(const [cwd,sessions] of grouped){let worktrees=[];if(inspected<deepLimit){try{worktrees=this.worktrees.inspect(cwd);inspected++;}catch{}}this.projectSummaries.set(cwd,{active:sessions.filter((session)=>[STATUS.RUNNING,STATUS.WAITING].includes(session.status)).length,dirty:worktrees.filter((item)=>item.dirty).length,worktrees:worktrees.length,profiles:profileCounts.get(cwd)||0,branches:new Set(sessions.map((session)=>session.branch).filter(Boolean)).size,lastActivity:Math.max(...sessions.map((session)=>session.updatedAt||0))});} }
+  refreshProjectSummaries(deepLimit=8) { this.projectSummaries.clear();const grouped=new Map();for(const session of this.sessions){if(!session.cwd)continue;const rows=grouped.get(session.cwd)||[];rows.push(session);grouped.set(session.cwd,rows);}let inspected=0;for(const [cwd,sessions] of grouped){let worktrees=[];if(inspected<deepLimit){try{worktrees=this.worktrees.inspect(cwd);inspected++;}catch{}}this.projectSummaries.set(cwd,{active:sessions.filter((session)=>[STATUS.RUNNING,STATUS.WAITING].includes(session.status)).length,dirty:worktrees.filter((item)=>item.dirty).length,worktrees:worktrees.length,branches:new Set(sessions.map((session)=>session.branch).filter(Boolean)).size,lastActivity:Math.max(...sessions.map((session)=>session.updatedAt||0))});} }
+  startOnboardingIfNeeded() { if(Number(this.store.state.ui?.onboardingVersion||0)<ONBOARDING_VERSION)this.startOnboarding(); }
+  startOnboarding() { this.palette=false;this.help=false;this.prompt=false;this.onboarding=true;this.onboardingStep=0;this.setView('dashboard'); }
+  advanceOnboarding(key) { if(key!==ONBOARDING_KEYS[this.onboardingStep])return;this.onboardingStep++;if(this.onboardingStep>=ONBOARDING_KEYS.length)this.finishOnboarding('Tour complete · press ? whenever you need the keyboard reference'); }
+  finishOnboarding(status) { this.onboarding=false;this.store.setUi({onboardingVersion:ONBOARDING_VERSION});this.status=status; }
 }
 
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
 const ACTIVE_DISCOVERY_WINDOW = 5 * 60 * 1000;
 const DISCOVERY_RETRY_INTERVAL = 5 * 1000;
+const FINDER_FILTERS = ['project','harness','branch'];
+export const ONBOARDING_VERSION = 3;
+export const ONBOARDING_KEYS = ['enter','2','1','/','esc','ctrl+k','esc','enter','enter','enter'];
 function mergeMetadata(session, local) { const git = session.git || {}; return {...session, title: local.alias || session.title, branch: session.branch || git.branch || '', local: {pinned: false, alias: '', note: '', hidden: false, ...local}, status: STATUS.OFFLINE, statusUpdatedAt: session.updatedAt}; }
 function action(id, label, enabled, reason = '') { return {id, label, enabled, reason}; }
 function fuzzy(value, query) { let index = 0; for (const character of value) if (character === query[index]) index += 1; return index === query.length; }
 function fuzzyScore(value, query) { if (!query) return 0; const exact = value.indexOf(query); return exact >= 0 ? 1000 - exact : query.length; }
-function pathName(value) { return String(value || 'project').split('/').filter(Boolean).pop() || 'project'; }
 function shortError(error) { return String(error?.stderr || error?.message || error).trim().split('\n').pop().replace(/^Error:\s*/,''); }
+function quoteSearchValue(value){const text=String(value);return /\s/.test(text)?`"${text.replaceAll('"','\\"')}"`:text;}
 
 export function folderKey(session) {
   return session.cwd || session.project || 'Unknown folder';

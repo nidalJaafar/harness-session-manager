@@ -64,7 +64,7 @@ HSM 1.0 recognizes these optional adapter methods without requiring them from ol
 
 - `messagesSince(session, cursor)` returns normalized messages for incremental local indexing; HSM falls back to `preview()`.
 - `projectIdentity(session)` returns a stable repository or project key.
-- `prepareLaunch({cwd, profile})` returns a native launch declaration.
+- `prepareLaunch({cwd})` returns a native launch declaration.
 - `processes()` and existing capability methods continue to enrich live state and management actions.
 
 Indexed messages may add `createdAt` and referenced paths. Transcript content remains in the local HSM database.
