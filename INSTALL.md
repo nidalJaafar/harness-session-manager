@@ -38,7 +38,7 @@ This clones HSM to `~/.local/share/harness-session-manager`, installs production
 - Optional: SQLite compiled with FTS5 for ranked transcript search (HSM falls back automatically)
 - Optional: `notify-send` for daemon alerts
 - Optional: systemd user services for the background daemon
-- Any combination of Claude Code, OpenCode, and Pi
+- Any combination of Claude Code, OpenCode V1/V2, and Pi
 
 On first interactive launch, HSM installs lifecycle integrations for detected harnesses. Existing configuration files are backed up before modification.
 

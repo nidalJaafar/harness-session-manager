@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
-import {DEFAULT_OPENCODE_DB} from './adapters.mjs';
+import {openCodeSources} from './adapters.mjs';
 import {scanHarnessProcesses} from './live.mjs';
 import {StateStore} from './state.mjs';
 import {HsmDaemon, runDaemon} from './daemon.mjs';
@@ -13,7 +13,8 @@ import {DEFAULT_CODEX_DB,DEFAULT_CODEX_LOGS_DB} from './harnesses/codex.mjs';
 import {UpdateManager} from './update.mjs';
 
 const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude/settings.json');
-const OPENCODE_PLUGIN = path.join(os.homedir(), '.config/opencode/plugins/hsm.mjs');
+const OPENCODE_PLUGIN = path.join(os.homedir(), '.config/opencode/plugins/hsm.js');
+const LEGACY_OPENCODE_PLUGIN = path.join(os.homedir(), '.config/opencode/plugins/hsm.mjs');
 const PI_EXTENSION = path.join(process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi/agent'), 'extensions/hsm.ts');
 const LEGACY_HOOK_MARKER = 'hsm event';
 
@@ -25,7 +26,7 @@ export async function runSubcommand(args, {store = new StateStore(), stdin = pro
   const command = args[0];
   if (command === 'event') return ingestEvent(args.slice(1), store, stdin);
   if (command === 'hooks') return manageHooks(args[1]);
-  if (command === 'doctor') return doctor({store, dbPath: flag(args, '--db', DEFAULT_OPENCODE_DB)});
+  if (command === 'doctor') return doctor({store, dbPath: flag(args, '--db', '')});
   if (command === 'daemon') return manageDaemon(args.slice(1), store);
   if (command === 'worktree') return manageWorktrees(args.slice(1));
   if (command === 'index') return manageIndex(args.slice(1), store);
@@ -78,6 +79,7 @@ function manageHooks(action = 'status') {
   if (action === 'remove') {
     removeClaudeHooks();
     if (fs.existsSync(OPENCODE_PLUGIN)) { backupFile(OPENCODE_PLUGIN); fs.unlinkSync(OPENCODE_PLUGIN); }
+    if (fs.existsSync(LEGACY_OPENCODE_PLUGIN)) { backupFile(LEGACY_OPENCODE_PLUGIN); fs.unlinkSync(LEGACY_OPENCODE_PLUGIN); }
     if (fs.existsSync(PI_EXTENSION)) { backupFile(PI_EXTENSION); fs.unlinkSync(PI_EXTENSION); }
     console.log('Removed HSM lifecycle integrations.');
     return true;
@@ -91,14 +93,15 @@ function installHooks() {
   installPiExtension();
 }
 
-export function doctor({store = new StateStore(), dbPath = DEFAULT_OPENCODE_DB} = {}) {
+export function doctor({store = new StateStore(), dbPath = ''} = {}) {
   const checks = [];
-  checks.push(checkCommand('claude'), checkCommand('opencode'), checkCommand('pi'), checkCommand('codex'), checkCommand('sqlite3'), checkCommand('bun'));
-  checks.push({name: 'OpenCode DB', ok: fs.existsSync(dbPath), detail: dbPath});
+  checks.push(checkCommand('claude'), checkCommand('opencode'), checkCommand('opencode2'), checkCommand('pi'), checkCommand('codex'), checkCommand('sqlite3'), checkCommand('bun'));
+  const sources = openCodeSources(dbPath);
+  for (const source of sources) checks.push({name: `OpenCode V${source.version} DB`, ok: fs.existsSync(source.dbPath), detail: source.dbPath});
   checks.push({name:'Codex thread store',ok:fs.existsSync(DEFAULT_CODEX_DB),detail:DEFAULT_CODEX_DB});
   checks.push({name:'Codex live log',ok:fs.existsSync(DEFAULT_CODEX_LOGS_DB),detail:DEFAULT_CODEX_LOGS_DB});
-  if (fs.existsSync(dbPath)) {
-    try { const result = execFileSync('sqlite3', [dbPath, 'pragma integrity_check;'], {encoding: 'utf8'}).trim(); checks.push({name: 'OpenCode integrity', ok: result === 'ok', detail: result}); } catch (error) { checks.push({name: 'OpenCode integrity', ok: false, detail: error.message}); }
+  for (const source of sources.filter((item) => fs.existsSync(item.dbPath))) {
+    try { const result = execFileSync('sqlite3', [source.dbPath, 'pragma integrity_check;'], {encoding: 'utf8'}).trim(); checks.push({name: `OpenCode V${source.version} integrity`, ok: result === 'ok', detail: result}); } catch (error) { checks.push({name: `OpenCode V${source.version} integrity`, ok: false, detail: error.message}); }
   }
   const hooks = hookStatus();
   checks.push({name: 'Claude hooks', ok: hooks.claude, detail: hooks.claude ? 'installed' : 'run hsm hooks install'});
@@ -153,10 +156,14 @@ function removeClaudeHooks() {
 }
 
 function installOpenCodePlugin() {
+  if (fs.existsSync(LEGACY_OPENCODE_PLUGIN)) { backupFile(LEGACY_OPENCODE_PLUGIN); fs.unlinkSync(LEGACY_OPENCODE_PLUGIN); }
   if (fs.existsSync(OPENCODE_PLUGIN)) backupFile(OPENCODE_PLUGIN);
   fs.mkdirSync(path.dirname(OPENCODE_PLUGIN), {recursive: true});
-  const executable = JSON.stringify(hsmExecutable());
-  fs.writeFileSync(OPENCODE_PLUGIN, `import {spawn} from 'node:child_process';\n\nexport const HsmLifecycle = async ({directory}) => ({\n  event: async ({event}) => {\n    const sessionId = event.properties?.sessionID || event.properties?.sessionId || event.properties?.info?.id;\n    if (!sessionId) return;\n    const type = ({'session.created':'started','session.idle':'waiting','session.error':'failed','session.deleted':'completed'})[event.type] || (event.type?.startsWith('tool.') ? 'heartbeat' : null);\n    if (!type) return;\n    const child = spawn(${executable}, ['event','--harness','opencode','--session',sessionId,'--type',type,'--cwd',directory], {detached:true, stdio:'ignore'});\n    child.unref();\n  },\n});\n`, {mode: 0o600});
+  fs.writeFileSync(OPENCODE_PLUGIN, openCodePluginSource(hsmExecutable()), {mode: 0o600});
+}
+
+export function openCodePluginSource(executable) {
+  return `import path from 'node:path';\nimport {spawn} from 'node:child_process';\n\nfunction emit(event, directory = '') {\n  const sessionId = event.data?.sessionID || event.data?.info?.id || event.properties?.sessionID || event.properties?.sessionId || event.properties?.info?.id;\n  if (!sessionId) return;\n  const type = ({\n    'session.created': 'started',\n    'session.execution.started': 'running',\n    'session.execution.succeeded': 'waiting',\n    'session.execution.failed': 'failed',\n    'session.execution.interrupted': 'waiting',\n    'session.idle': 'waiting',\n    'session.error': 'failed',\n    'session.deleted': 'completed',\n  })[event.type] || (event.type?.startsWith('session.tool.') || event.type?.startsWith('tool.') ? 'heartbeat' : null);\n  if (!type) return;\n  const cwd = event.location?.directory || directory;\n  const child = spawn(${JSON.stringify(executable)}, ['event', '--harness', 'opencode', '--session', sessionId, '--type', type, '--cwd', cwd], {detached: true, stdio: 'ignore'});\n  child.unref();\n}\n\nexport const HsmLifecycle = async ({directory}) => ({\n  event: async ({event}) => emit(event, directory),\n});\n\nconst v2 = {\n  id: 'hsm.lifecycle',\n  setup: (ctx) => {\n    const controller = new AbortController();\n    const iterator = ctx.event.subscribe({signal: controller.signal})[Symbol.asyncIterator]();\n    let active = true;\n    void (async () => {\n      while (active) {\n        const item = await iterator.next();\n        if (item.done) break;\n        if (active) emit(item.value);\n      }\n    })().catch((error) => {\n      if (active) console.error('HSM lifecycle event stream failed', error);\n    });\n    return () => {\n      active = false;\n      controller.abort();\n      void iterator.return?.();\n    };\n  },\n};\n\nconst executableName = path.basename(process.execPath);\nconst isV2 = /^opencode2(?:\\.exe)?$/.test(executableName) || (process.argv.includes('serve') && (process.argv.includes('--stdio') || process.argv.includes('--service')));\nexport default isV2 ? v2 : HsmLifecycle;\n`;
 }
 
 function installPiExtension() {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import {SessionHubModel} from '../src/model.mjs';
 import {applyLiveState, deriveStatus, scanHarnessProcesses} from '../src/live.mjs';
 import {StateStore, sessionKey} from '../src/state.mjs';
-import {ensureHooksInstalled} from '../src/cli.mjs';
+import {ensureHooksInstalled, openCodePluginSource} from '../src/cli.mjs';
 
 function fixture() {
   return {id: 's1', harness: 'claude', harnessName: 'Claude Code', title: 'Fix login', project: 'api', cwd: process.cwd(), updatedAt: Date.now(), resume: {command: 'claude', args: ['--resume', 's1']}, capabilities: {rename: true, preview: true}, git: {branch: 'main', dirty: true, files: 2}};
@@ -55,6 +55,16 @@ test('process detection preserves case-sensitive IDs and ignores terminal wrappe
     {pid: 2, executable: 'opencode', command: 'opencode -s ses_ABC123'},
   ]});
   assert.deepEqual(processes, [{harness: 'opencode', sessionId: 'ses_ABC123', pid: 2, cwd: ''}]);
+});
+
+test('process detection recognizes opencode2 sessions and ignores headless servers', () => {
+  const processes = scanHarnessProcesses({exec: () => [
+    {pid: 1, executable: 'opencode2', command: 'opencode2 serve --service'},
+    {pid: 2, executable: 'opencode', command: 'opencode serve --port 4096'},
+    {pid: 4, executable: 'opencode2.exe', command: '/opt/opencode2.exe serve --service'},
+    {pid: 3, executable: 'opencode2', command: 'opencode2 -s ses_V2ABC'},
+  ]});
+  assert.deepEqual(processes, [{harness: 'opencode', sessionId: 'ses_V2ABC', pid: 3, cwd: ''}]);
 });
 
 test('process detection recognizes Codex resume and ignores its app server',()=>{const rows=scanHarnessProcesses({exec:()=>[{pid:1,executable:'codex',command:'codex app-server --remote-control'},{pid:2,executable:'codex',command:'codex resume 019f-ABC'}]});assert.deepEqual(rows,[{harness:'codex',sessionId:'019f-ABC',pid:2,cwd:''}]);});
@@ -130,8 +140,11 @@ test('hide is confirmed by workflow state and undo restores local visibility', a
 test('archive creates an undo record and invokes adapter restore', async () => {
   const {store} = setup();
   let archived = false;
-  const row = {...fixture(), capabilities: {...fixture().capabilities, archive: true}};
-  const managed = {...adapter([]), sessions: async () => archived ? [] : [row], archive: async () => { archived = true; return {backupPath: '/tmp/backup.db'}; }, restore: async () => { archived = false; }};
+  let restoredSource;
+  const nativeSource = {dbPath: '/tmp/opencode.db', command: 'opencode', version: 1};
+  const migratedSource = {dbPath: '/tmp/opencode-next.db', command: 'opencode2', version: 2};
+  const row = {...fixture(), nativeSource, capabilities: {...fixture().capabilities, archive: true}};
+  const managed = {...adapter([]), sessions: async () => archived ? [{...row, nativeSource: migratedSource}] : [row], archive: async () => { archived = true; return {backupPath: '/tmp/backup.db'}; }, restore: async (session) => { restoredSource = session.nativeSource; archived = false; }};
   const model = new SessionHubModel({adapters: [managed], store, processScanner: () => []});
   await model.load();
   await model.destructiveAction('archive', model.sessions[0]);
@@ -139,6 +152,7 @@ test('archive creates an undo record and invokes adapter restore', async () => {
   assert.equal(store.latestUndo().backupPath, '/tmp/backup.db');
   await model.undoLatest();
   assert.equal(archived, false);
+  assert.deepEqual(restoredSource, nativeSource);
 });
 
 test('subagent threads are hidden by default and hotkey preference persists', async () => {
@@ -170,6 +184,26 @@ test('first-run hook bootstrap installs only when an integration is missing', ()
   assert.equal(ensureHooksInstalled({status, install}).installed, true);
   assert.equal(ensureHooksInstalled({status, install}).installed, false);
   assert.equal(installs, 1);
+});
+
+test('generated OpenCode plugin supports V1 hooks and the V2 event stream', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hsm-opencode-plugin-'));
+  const file = path.join(dir, 'hsm.mjs');
+  const source = openCodePluginSource('/bin/true');
+  fs.writeFileSync(file, source);
+  const plugin = await import(`${new URL(`file://${file}`)}?test=${Date.now()}`);
+  assert.equal(plugin.default, plugin.HsmLifecycle);
+  process.argv.push('serve', '--stdio');
+  try {
+    const v2 = await import(`${new URL(`file://${file}`)}?test=v2-${Date.now()}`);
+    assert.equal(v2.default.id, 'hsm.lifecycle');
+    const cleanup = await v2.default.setup({event: {subscribe: () => ({async *[Symbol.asyncIterator]() { yield {type: 'session.execution.started', data: {sessionID: 'ses_test'}}; }})}});
+    cleanup();
+    const hangingCleanup = await v2.default.setup({event: {subscribe: () => ({[Symbol.asyncIterator]() { return {next: () => new Promise(() => {}), return: () => new Promise(() => {})}; }})}});
+    assert.equal(hangingCleanup(), undefined);
+  } finally { process.argv.splice(-2); }
+  assert.match(source, /ctx\.event\.subscribe/);
+  assert.match(source, /session\.execution\.started/);
 });
 
 test('obsolete activity view preference migrates to dashboard', () => {

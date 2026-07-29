@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import {DEFAULT_OPENCODE_DB} from './adapters.mjs';
 import {createHarnessAdapters} from './harnesses/index.mjs';
 import {SessionHubModel} from './model.mjs';
 import {ensureBun} from './runtime.mjs';
@@ -14,7 +13,7 @@ if (args.includes('--help') || args.includes('-h')) {
 }
 if (await runSubcommand(args)) process.exit(0);
 const only = value('--only', '');
-const adapters = await createHarnessAdapters({only, dbPath: value('--db', DEFAULT_OPENCODE_DB)});
+const adapters = await createHarnessAdapters({only, dbPath: value('--db', '')});
 const model = new SessionHubModel({adapters, showSubagents: args.includes('--show-subagents') ? true : undefined});
 try {
   if (args.includes('--preview')) { await model.load(); model.width = Number(value('--width', 120)); model.height = Number(value('--height', 36)); console.log(render(model)); }
