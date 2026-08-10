@@ -314,7 +314,7 @@ export class SessionHubModel {
       ['running', this.filtered.filter((session) => session.status === STATUS.RUNNING)],
       ['pinned', pinned],
       ['snoozed', this.filtered.filter((session) => Number(session.local.snoozedUntil || 0) > Date.now())],
-      ['recent', this.filtered.filter((session) => !pinned.includes(session)).sort((a, b) => Number(b.local.lastOpenedAt || 0) - Number(a.local.lastOpenedAt || 0) || b.updatedAt - a.updatedAt).slice(0, 12)],
+      ['recent', this.filtered.filter((session) => !pinned.includes(session)).sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, 12)],
     ];
     const rows = [];
     for (const [lane, sessions] of lanes) {

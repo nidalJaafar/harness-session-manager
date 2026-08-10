@@ -79,6 +79,21 @@ test('dashboard is default and assigns waiting and pinned lanes', async () => {
   assert.ok(model.dashboardRows().some((row) => row.lane === 'pinned'));
 });
 
+test('dashboard recent lane keeps the newest activity visible ahead of previously resumed sessions', async () => {
+  const {store} = setup();
+  const old = Array.from({length: 12}, (_, index) => ({...fixture(), id: `old-${index}`, updatedAt: index + 1}));
+  for (const session of old) store.updateSession(sessionKey(session), {lastOpenedAt: 10_000 + session.updatedAt});
+  const newest = {...fixture(), id: 'newest', updatedAt: 100};
+  const model = new SessionHubModel({adapters: [adapter([...old, newest])], store, processScanner: () => []});
+  await model.load();
+  const rows = model.dashboardRows();
+  const recentStart = rows.findIndex((row) => row.type === 'lane' && row.lane === 'recent');
+  const recent = rows.slice(recentStart + 1).filter((row) => row.type === 'session');
+  assert.equal(recent.length, 12);
+  assert.equal(recent[0].session.id, 'newest');
+  assert.ok(recent.some((row) => row.session.id === 'newest'));
+});
+
 test('view selection and pin state persist', async () => {
   const {dir, store} = setup();
   const model = new SessionHubModel({adapters: [adapter([fixture()])], store, processScanner: () => []});

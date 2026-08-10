@@ -14,7 +14,7 @@ See [INSTALL.md](INSTALL.md) for requirements, updates, uninstalling, and agent-
 
 ## Updates
 
-HSM checks stable Git tags in the background at most once every six hours. When a newer semantic version exists, the bottom status bar shows `HSM 1.2.0 is available · run hsm update`. The check never blocks startup; disable it with `HSM_DISABLE_UPDATE_CHECK=1`.
+HSM checks stable Git tags in the background at most once every six hours. When a newer semantic version exists, the bottom status bar shows `HSM 1.2.1 is available · run hsm update`. The check never blocks startup; disable it with `HSM_DISABLE_UPDATE_CHECK=1`.
 
 ```bash
 hsm update check   # check immediately
