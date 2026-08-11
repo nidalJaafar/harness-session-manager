@@ -1,6 +1,6 @@
 {
   "name": "harness-session-manager",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "One terminal hub for Claude Code, OpenCode, and future coding harness sessions.",
   "type": "module",
   "bin": { "sessions": "./src/index.mjs", "hsm": "./src/index.mjs" },
