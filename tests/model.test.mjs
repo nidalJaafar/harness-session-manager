@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {loadAll, OpenCodeAdapter, openCodeSources, OPENCODE_V2_DB} from '../src/adapters.mjs';
+import {loadAll, OpenCodeAdapter, openCodeSources} from '../src/adapters.mjs';
 import {SessionHubModel, sortByFolderActivity} from '../src/model.mjs';
 import {render} from '../src/tui.mjs';
 import {StateStore} from '../src/state.mjs';
@@ -112,6 +112,22 @@ test('OpenCode V2 preview reads native session messages', async () => {
   ]);
 });
 
+test('OpenCode compatibility keeps native mutations on V1 only', () => {
+  const v1 = {dbPath: process.execPath, command: 'opencode', version: 1};
+  const v2 = {dbPath: process.execPath, command: 'opencode2', version: 2};
+  const adapter = new OpenCodeAdapter({sources: [v1], sql: () => []});
+  const legacy = adapter.normalize({id: 'v1', title: 'Legacy'}, v1);
+  const next = adapter.normalize({id: 'v2', title: 'Next'}, v2);
+  assert.equal(legacy.capabilities.rename, true);
+  assert.equal(legacy.capabilities.archive, true);
+  assert.equal(legacy.capabilities.move, true);
+  assert.equal(legacy.capabilities.liveEvents, true);
+  assert.equal(next.capabilities.rename, false);
+  assert.equal(next.capabilities.archive, false);
+  assert.equal(next.capabilities.move, false);
+  assert.equal(next.capabilities.liveEvents, false);
+});
+
 test('OpenCode loads both databases, deduplicates by newest update, and uses native commands', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hsm-opencode-'));
   const v2 = path.join(dir, 'opencode-next.db');
@@ -141,32 +157,51 @@ test('OpenCode keeps a healthy database available when the other source fails', 
   assert.match(adapter.error.message, /1 OpenCode database source failed/);
 });
 
-test('OpenCode detects custom database generations and isolates custom V2 launches', async () => {
+test('OpenCode recognizes the official V2 database name and keeps it read-only', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hsm-opencode-custom-'));
-  const custom = path.join(dir, 'custom.db');
-  execFileSync('sqlite3', [custom, 'create table session (id text, time_suspended integer);']);
+  const custom = path.join(dir, 'opencode-next.db');
+  execFileSync('sqlite3', [custom, 'create table session (id text, workspace_id text, time_compacting integer); create table session_message (id text, session_id text, type text, seq integer, data text);']);
   const adapter = new OpenCodeAdapter({dbPath: custom, hasCommand: () => true});
   assert.equal(adapter.sources[0].version, 2);
-  assert.deepEqual(adapter.newSession.args, ['--standalone']);
+  assert.deepEqual(adapter.newSession.args, []);
   assert.equal(adapter.newSession.env.OPENCODE_DB, custom);
-  await assert.rejects(adapter.rename({id: 's1', nativeSource: adapter.sources[0]}, 'Rename'), /unavailable for a custom OpenCode V2 database/);
-
-  const calls = [];
-  const managedSource = {dbPath: OPENCODE_V2_DB, command: 'opencode2', version: 2};
-  const managed = new OpenCodeAdapter({sources: [managedSource], exec: (...args) => calls.push(args), hasCommand: () => true});
-  await managed.rename({id: 's1', nativeSource: managedSource}, 'Renamed');
-  assert.deepEqual(calls[0][1], ['api', 'post', '/api/session/s1/rename', '--data', '{"title":"Renamed"}']);
-  assert.equal(calls[0][2].env.OPENCODE_DB, OPENCODE_V2_DB);
+  const session = adapter.normalize({id: 's1', title: 'V2', model: '{"providerID":"anthropic","id":"claude-sonnet-4"}'}, adapter.sources[0]);
+  assert.equal(session.model, 'anthropic/claude-sonnet-4');
+  assert.equal(session.capabilities.rename, false);
+  assert.equal(session.capabilities.archive, false);
+  assert.equal(session.capabilities.move, false);
+  assert.equal(session.capabilities.liveEvents, false);
+  await assert.rejects(adapter.rename(session, 'Rename'), /unavailable for OpenCode V2/);
+  await assert.rejects(adapter.archive(session), /unavailable for OpenCode V2/);
+  await assert.rejects(adapter.move(session, 'project'), /unavailable for OpenCode V2/);
 });
 
-test('OPENCODE_DB detects the database generation instead of assuming V2', () => {
+test('OPENCODE_DB leaves an arbitrarily named database ambiguous and read-only', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hsm-opencode-env-'));
   const dbPath = path.join(dir, 'legacy-custom.db');
-  execFileSync('sqlite3', [dbPath, 'create table session (id text);']);
+  execFileSync('sqlite3', [dbPath, 'create table session (id text); create table session_message (id text, session_id text, type text, seq integer, data text);']);
   const previous = process.env.OPENCODE_DB;
   process.env.OPENCODE_DB = dbPath;
-  try { assert.deepEqual(openCodeSources(), [{dbPath, command: 'opencode', version: 1}]); }
+  try {
+    assert.deepEqual(openCodeSources(), [{dbPath, command: 'opencode', version: 1, ambiguous: true}]);
+    const adapter = new OpenCodeAdapter({dbPath, hasCommand: () => true});
+    const session = adapter.normalize({id: 's1', title: 'Unknown generation'}, adapter.sources[0]);
+    assert.equal(session.capabilities.rename, false);
+    assert.equal(session.capabilities.archive, false);
+    assert.equal(session.capabilities.move, false);
+    await assert.rejects(adapter.rename(session, 'Rename'), /OPENCODE_VERSION=1\|2/);
+  }
   finally { if (previous === undefined) delete process.env.OPENCODE_DB; else process.env.OPENCODE_DB = previous; }
+});
+
+test('OPENCODE_VERSION overrides ambiguous custom database detection', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hsm-opencode-override-'));
+  const dbPath = path.join(dir, 'custom.db');
+  fs.writeFileSync(dbPath, '');
+  const previous = process.env.OPENCODE_VERSION;
+  process.env.OPENCODE_VERSION = '2';
+  try { assert.deepEqual(openCodeSources(dbPath), [{dbPath, command: 'opencode2', version: 2}]); }
+  finally { if (previous === undefined) delete process.env.OPENCODE_VERSION; else process.env.OPENCODE_VERSION = previous; }
 });
 
 test('OpenCode launcher falls back to an installed generation without a database yet', () => {

@@ -186,24 +186,16 @@ test('first-run hook bootstrap installs only when an integration is missing', ()
   assert.equal(installs, 1);
 });
 
-test('generated OpenCode plugin supports V1 hooks and the V2 event stream', async () => {
+test('generated OpenCode plugin uses only the supported V1 hook contract', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hsm-opencode-plugin-'));
   const file = path.join(dir, 'hsm.mjs');
   const source = openCodePluginSource('/bin/true');
   fs.writeFileSync(file, source);
   const plugin = await import(`${new URL(`file://${file}`)}?test=${Date.now()}`);
   assert.equal(plugin.default, plugin.HsmLifecycle);
-  process.argv.push('serve', '--stdio');
-  try {
-    const v2 = await import(`${new URL(`file://${file}`)}?test=v2-${Date.now()}`);
-    assert.equal(v2.default.id, 'hsm.lifecycle');
-    const cleanup = await v2.default.setup({event: {subscribe: () => ({async *[Symbol.asyncIterator]() { yield {type: 'session.execution.started', data: {sessionID: 'ses_test'}}; }})}});
-    cleanup();
-    const hangingCleanup = await v2.default.setup({event: {subscribe: () => ({[Symbol.asyncIterator]() { return {next: () => new Promise(() => {}), return: () => new Promise(() => {})}; }})}});
-    assert.equal(hangingCleanup(), undefined);
-  } finally { process.argv.splice(-2); }
-  assert.match(source, /ctx\.event\.subscribe/);
-  assert.match(source, /session\.execution\.started/);
+  assert.equal(typeof plugin.default, 'function');
+  assert.doesNotMatch(source, /ctx\.event\.subscribe/);
+  assert.doesNotMatch(source, /session\.execution\.started/);
 });
 
 test('obsolete activity view preference migrates to dashboard', () => {
