@@ -10,6 +10,14 @@ hsm doctor
 hsm
 ```
 
+### Arch Linux (AUR)
+
+Arch Linux users can install the [`harness-session-manager`](https://aur.archlinux.org/packages/harness-session-manager) package with their preferred AUR helper, for example:
+
+```bash
+paru -S harness-session-manager
+```
+
 See [INSTALL.md](INSTALL.md) for requirements, updates, uninstalling, and agent-oriented installation.
 
 ## Updates
