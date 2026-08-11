@@ -155,6 +155,23 @@ test('archive creates an undo record and invokes adapter restore', async () => {
   assert.deepEqual(restoredSource, nativeSource);
 });
 
+test('move is exposed for capable sessions and records an undo target', async () => {
+  const {store} = setup();
+  let target = '';
+  const row = {...fixture(), projectId: 'old-project', capabilities: {...fixture().capabilities, move: true}};
+  const managed = {...adapter([row]), move: async (_session, value) => { target = value; }};
+  const model = new SessionHubModel({adapters: [managed], store, processScanner: () => []});
+  await model.load();
+  model.selectedSession = model.rows().findIndex((item) => item.session);
+  assert.ok(model.paletteItems().some((item) => item.id === 'move'));
+  await model.runPaletteAction({id: 'move'});
+  await model.completePrompt('new-project');
+  assert.equal(target, 'new-project');
+  assert.equal(store.latestUndo().type, 'move');
+  assert.equal(store.latestUndo().before, 'old-project');
+  assert.equal(store.latestUndo().after, 'new-project');
+});
+
 test('subagent threads are hidden by default and hotkey preference persists', async () => {
   const {dir, store} = setup();
   const parent = fixture();

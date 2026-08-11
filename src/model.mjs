@@ -358,6 +358,7 @@ export class SessionHubModel {
         action(session.local?.snoozedUntil ? 'wake' : 'snooze', session.local?.snoozedUntil ? 'Wake session notifications' : 'Snooze notifications for one hour', true),
         action('alias', 'Set local alias', true), action('tag', 'Set session tag', true), action('note', 'Add local note', true),
         ...(session.capabilities?.rename ? [action('rename', 'Rename session', true)] : []),
+        ...(session.capabilities?.move ? [action('move', 'Move session to another project', true)] : []),
         ...(session.capabilities?.archive ? [action('archive', 'Archive session', true)] : []),
         action('hide', 'Hide session from HSM', true),
       ] : []),
@@ -393,6 +394,7 @@ export class SessionHubModel {
     if (this.promptKind === 'alias' || this.promptKind === 'note') { this.store.updateSession(sessionKey(session), {[this.promptKind]: value}); session.local[this.promptKind] = value; this.recordAction(session, `${this.promptKind}-updated`); this.status = `Saved local ${this.promptKind}`; return; }
     if (this.promptKind === 'tag') { if (session.capabilities?.tag && adapter.tag) { await adapter.tag(session, value); session.tag = value; } else { this.store.updateSession(sessionKey(session), {tag: value}); session.local.tag = value; } this.recordAction(session, 'tagged', value); this.status = `Tagged ${session.title} as ${value}`; return; }
     if (this.promptKind === 'rename') { await adapter.rename(session, value); this.store.recordUndo({type: 'rename', session: sessionKey(session), before: session.title, after: value}); this.recordAction(session, 'renamed', value); session.title = value; this.status = `Renamed to ${value}`; return; }
+    if (this.promptKind === 'move') { const before = session.projectId || session.project; await adapter.move(session, value); this.store.recordUndo({type: 'move', session: sessionKey(session), before, after: value, nativeSource: session.nativeSource}); this.recordAction(session, 'moved', value); this.status = `Moved ${session.title} to ${value}`; return this.load(); }
     if (this.promptKind === 'confirm') { if (value !== 'yes') { this.status = 'Action cancelled'; return; } await this.destructiveAction(this.pendingAction, session); }
   }
   async destructiveAction(kind, session) {
@@ -404,7 +406,7 @@ export class SessionHubModel {
     const undo = this.store.latestUndo(); if (!undo) { this.status = 'Nothing to undo'; return; }
     const [harness, id] = undo.session.split(':');
     let session = this.sessions.find((item) => item.harness === harness && item.id === id) || {harness, id, nativeSource: undo.nativeSource};
-    if (undo.type === 'archive' && undo.nativeSource) session = {...session, nativeSource: undo.nativeSource};
+    if (['archive', 'move'].includes(undo.type) && undo.nativeSource) session = {...session, nativeSource: undo.nativeSource};
     const adapter = this.adapters.find((item) => item.id === harness);
     if (undo.type === 'archive' && adapter?.restore) await adapter.restore(session);
     else if (undo.type === 'rename' && adapter?.rename) await adapter.rename(session, undo.before);

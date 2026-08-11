@@ -95,9 +95,9 @@ Subagent and child threads are hidden by default. Press `s`, use the palette, se
 
 ### OpenCode V1 and V2 support
 
-HSM reads both `~/.local/share/opencode/opencode.db` and the OpenCode 2 beta store at `~/.local/share/opencode/opencode-next.db`, deduplicating migrated sessions by their latest update. Sessions resume with their native `opencode` or `opencode2` executable, and new sessions prefer the newest available store. Set `OPENCODE_DB` or pass `--db` to use a custom database. For a custom filename other than `opencode.db` or `opencode-next.db`, also set `OPENCODE_VERSION=1|2`; the current V1 and V2 schemas overlap, so table inspection cannot identify the generation reliably.
+HSM reads both `~/.local/share/opencode/opencode.db` and the OpenCode 2 beta store at `~/.local/share/opencode/opencode-next.db`, deduplicating migrated sessions by their latest update. Sessions resume with their native `opencode` or `opencode2` executable, and new sessions prefer the newest available store. Set `OPENCODE_DB` or pass `--db` to use a custom database. HSM recognizes the current V2 `session_v2` projection; for an older custom filename whose generation remains ambiguous, also set `OPENCODE_VERSION=1|2`.
 
-OpenCode V1 and V2 use separate compatibility paths. V1 keeps its native preview, lifecycle, rename, archive, and move behavior. V2 uses its projected transcript schema and native executable, while rename, archive, and move stay disabled until OpenCode exposes stable service APIs for them. HSM never writes directly to a V2 service-owned database. An arbitrary custom store stays read-only until its version is explicit; `OPENCODE_DB` selects that store when HSM launches OpenCode.
+OpenCode V1 and V2 use separate compatibility paths. Both support preview, resume, rename, archive/restore, and move. V2 rename and move go through `opencode2 api --standalone` so OpenCode owns the mutation and event flow. OpenCode V2 does not currently expose an archive endpoint, so HSM backs up the database and changes only its `time_archived` projection for archive/restore. An arbitrary unresolved custom store stays read-only until its version is explicit; `OPENCODE_DB` selects that store when HSM launches OpenCode.
 
 ### Codex support
 

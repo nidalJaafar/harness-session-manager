@@ -69,7 +69,7 @@ export class ClaudeAdapter {
 }
 
 export class OpenCodeAdapter {
-  constructor({dbPath = '', sources = openCodeSources(dbPath), sql = defaultSql, hasCommand = commandExists} = {}) {
+  constructor({dbPath = '', sources = openCodeSources(dbPath), sql = defaultSql, exec = execFileSync, hasCommand = commandExists} = {}) {
     this.id = 'opencode';
     this.name = 'OpenCode';
     this.sources = sources;
@@ -77,6 +77,7 @@ export class OpenCodeAdapter {
     const launchSource = preferredOpenCodeSource(sources, hasCommand);
     this.newSession = launchSource ? {command: launchSource.command, args: launchArgs(launchSource), ...sourceEnvironment(launchSource)} : null;
     this.sql = sql;
+    this.exec = exec;
   }
 
   available() {
@@ -93,11 +94,12 @@ export class OpenCodeAdapter {
       if (!fs.existsSync(source.dbPath)) continue;
       let rows;
       try {
+        const sessionTable = openCodeSessionTable(this, source);
         rows = this.sql(source.dbPath, `select s.id, s.title, s.directory, s.path, s.parent_id,
           s.project_id, s.time_created, s.time_updated, s.time_archived, s.agent, s.model, s.cost,
           s.tokens_input, s.tokens_output, s.tokens_reasoning, s.summary_additions, s.summary_deletions, s.summary_files,
           p.name project_name, p.worktree project_worktree
-          from session s left join project p on p.id=s.project_id where s.time_archived is null order by s.time_updated desc;`);
+          from ${sessionTable} s left join project p on p.id=s.project_id where s.time_archived is null order by s.time_updated desc;`);
         loaded += 1;
       } catch (error) {
         errors.push(error);
@@ -158,22 +160,35 @@ export class OpenCodeAdapter {
   async rename(session, title) {
     const source = this.source(session);
     assertOpenCodeMutation(source, 'rename');
+    if (source.version === 2) {
+      this.openCodeV2Api(source, 'post', `/api/session/${session.id}/rename`, {title});
+      return {title};
+    }
     this.sql(source.dbPath, `update session set title=${sqlString(title)}, time_updated=${Date.now()} where id=${sqlString(session.id)} returning id;`);
     return {title, integrity: integrityCheck(source.dbPath)};
   }
-  async archive(session) { const source = this.source(session); assertOpenCodeMutation(source, 'archive'); const dbPath = source.dbPath; const backupPath = backupDb(dbPath); this.sql(dbPath, `update session set time_archived=${Date.now()} where id=${sqlString(session.id)} returning id;`); return {archived: true, backupPath, integrity: integrityCheck(dbPath)}; }
-  async restore(session) { const source = this.source(session); assertOpenCodeMutation(source, 'archive'); const dbPath = source.dbPath; this.sql(dbPath, `update session set time_archived=null where id=${sqlString(session.id)} returning id;`); return {archived: false, integrity: integrityCheck(dbPath)}; }
+  async archive(session) { const source = this.source(session); assertOpenCodeMutation(source, 'archive'); const dbPath = source.dbPath; const backupPath = backupDb(dbPath); const table = openCodeSessionTable(this, source); this.sql(dbPath, `update ${table} set time_archived=${Date.now()} where id=${sqlString(session.id)} returning id;`); return {archived: true, backupPath, integrity: integrityCheck(dbPath)}; }
+  async restore(session) { const source = this.source(session); assertOpenCodeMutation(source, 'archive'); const dbPath = source.dbPath; const table = openCodeSessionTable(this, source); this.sql(dbPath, `update ${table} set time_archived=null where id=${sqlString(session.id)} returning id;`); return {archived: false, integrity: integrityCheck(dbPath)}; }
   async move(session, target) {
     const source = this.source(session);
     assertOpenCodeMutation(source, 'move');
     const dbPath = source.dbPath;
     const project = this.sql(dbPath, `select id, worktree, name from project where id=${sqlString(target)} or lower(name)=lower(${sqlString(target)}) limit 1;`)[0];
     if (!project) throw new Error(`OpenCode project not found: ${target}`);
+    if (source.version === 2) {
+      this.openCodeV2Api(source, 'post', `/api/session/${session.id}/move`, {directory: project.worktree});
+      return {project};
+    }
     const backupPath = backupDb(dbPath);
     this.sql(dbPath, `update session set project_id=${sqlString(project.id)}, directory=${sqlString(project.worktree || session.cwd || '')}, time_updated=${Date.now()} where id=${sqlString(session.id)} returning id;`);
     return {project, backupPath, integrity: integrityCheck(dbPath)};
   }
-  async delete(session) { const source = this.source(session); assertOpenCodeMutation(source, 'delete'); const dbPath = source.dbPath; this.sql(dbPath, `delete from session where id=${sqlString(session.id)} returning id;`); return {deleted: true}; }
+  async delete(session) { const source = this.source(session); assertOpenCodeMutation(source, 'delete'); if (source.version === 2) { this.openCodeV2Api(source, 'delete', `/api/session/${session.id}`); return {deleted: true}; } const dbPath = source.dbPath; this.sql(dbPath, `delete from session where id=${sqlString(session.id)} returning id;`); return {deleted: true}; }
+  openCodeV2Api(source, method, route, data) {
+    const args = ['api', '--standalone', method, route];
+    if (data !== undefined) args.push('--data', JSON.stringify(data));
+    this.exec(source.command, args, {stdio: 'ignore', env: {...process.env, ...sourceEnvironment(source).env}});
+  }
 }
 
 export async function loadAll(adapters) {
@@ -227,10 +242,19 @@ function customOpenCodeSource(dbPath) {
   const filename = path.basename(dbPath);
   if (filename === 'opencode-next.db') return {dbPath, command: 'opencode2', version: 2};
   if (filename === 'opencode.db') return {dbPath, command: 'opencode', version: 1};
+  if (hasSqliteTable(dbPath, 'session_v2')) return {dbPath, command: 'opencode2', version: 2};
   // Current V1 and V2 schemas overlap, so arbitrary database names cannot be
   // classified safely from their tables. Preserve V1 launch behavior while
   // disabling writes until OPENCODE_VERSION selects an explicit contract.
   return {dbPath, command: 'opencode', version: 1, ambiguous: true};
+}
+
+function hasSqliteTable(dbPath, table) {
+  if (!fs.existsSync(dbPath)) return false;
+  try {
+    const output = execFileSync('sqlite3', ['-noheader', dbPath, `select 1 from sqlite_master where type='table' and name=${sqlString(table)} limit 1;`], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']});
+    return output.trim() === '1';
+  } catch { return false; }
 }
 
 function sourceEnvironment(source) { return {env: {OPENCODE_DB: source.dbPath}}; }
@@ -252,12 +276,12 @@ const OPENCODE_V1_COMPATIBILITY = {
 };
 
 const OPENCODE_V2_COMPATIBILITY = {
-  capabilities: {rename: false, tag: false, archive: false, delete: false, move: false, preview: true, cost: true, git: true, liveEvents: false},
+  capabilities: {rename: true, tag: false, archive: true, delete: false, move: true, preview: true, cost: true, git: true, liveEvents: false},
   preview: previewOpenCodeV2,
 };
 
 const OPENCODE_AMBIGUOUS_COMPATIBILITY = {
-  capabilities: {...OPENCODE_V2_COMPATIBILITY.capabilities},
+  capabilities: {...OPENCODE_V2_COMPATIBILITY.capabilities, rename: false, archive: false, move: false},
   preview: previewOpenCodeV2,
 };
 
@@ -268,6 +292,11 @@ function openCodeCompatibility(source) {
 function assertOpenCodeMutation(source, operation) {
   if (source.ambiguous) throw new Error(`${operation[0].toUpperCase()}${operation.slice(1)} is unavailable until OPENCODE_VERSION=1|2 selects the custom OpenCode database generation.`);
   if (!openCodeCompatibility(source).capabilities[operation]) throw new Error(`${operation[0].toUpperCase()}${operation.slice(1)} is unavailable for OpenCode V${source.version}.`);
+}
+
+function openCodeSessionTable(adapter, source) {
+  if (source.version !== 2) return 'session';
+  return adapter.sql(source.dbPath, "pragma table_info(session_v2);").length ? 'session_v2' : 'session';
 }
 
 function previewOpenCodeV2(adapter, session, source) {

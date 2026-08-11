@@ -112,7 +112,7 @@ test('OpenCode V2 preview reads native session messages', async () => {
   ]);
 });
 
-test('OpenCode compatibility keeps native mutations on V1 only', () => {
+test('OpenCode compatibility exposes equivalent mutations on V1 and V2', () => {
   const v1 = {dbPath: process.execPath, command: 'opencode', version: 1};
   const v2 = {dbPath: process.execPath, command: 'opencode2', version: 2};
   const adapter = new OpenCodeAdapter({sources: [v1], sql: () => []});
@@ -122,9 +122,9 @@ test('OpenCode compatibility keeps native mutations on V1 only', () => {
   assert.equal(legacy.capabilities.archive, true);
   assert.equal(legacy.capabilities.move, true);
   assert.equal(legacy.capabilities.liveEvents, true);
-  assert.equal(next.capabilities.rename, false);
-  assert.equal(next.capabilities.archive, false);
-  assert.equal(next.capabilities.move, false);
+  assert.equal(next.capabilities.rename, true);
+  assert.equal(next.capabilities.archive, true);
+  assert.equal(next.capabilities.move, true);
   assert.equal(next.capabilities.liveEvents, false);
 });
 
@@ -157,23 +157,39 @@ test('OpenCode keeps a healthy database available when the other source fails', 
   assert.match(adapter.error.message, /1 OpenCode database source failed/);
 });
 
-test('OpenCode recognizes the official V2 database name and keeps it read-only', async () => {
+test('OpenCode V2 uses its projected table and service mutation APIs', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hsm-opencode-custom-'));
   const custom = path.join(dir, 'opencode-next.db');
-  execFileSync('sqlite3', [custom, 'create table session (id text, workspace_id text, time_compacting integer); create table session_message (id text, session_id text, type text, seq integer, data text);']);
-  const adapter = new OpenCodeAdapter({dbPath: custom, hasCommand: () => true});
+  execFileSync('sqlite3', [custom, "create table session_v2 (id text, title text, directory text, path text, parent_id text, project_id text, time_created integer, time_updated integer, time_archived integer, agent text, model text, cost real, tokens_input integer, tokens_output integer, tokens_reasoning integer, summary_additions integer, summary_deletions integer, summary_files integer); create table session_message (id text, session_id text, type text, seq integer, data text); create table project (id text, worktree text, name text); insert into session_v2 (id,title,directory,project_id,time_created,time_updated,model) values ('s1','V2','/tmp/source','p0',1000,2000,'{\"providerID\":\"anthropic\",\"id\":\"claude-sonnet-4\"}'); insert into project values ('p1', '/tmp/project', 'Target');"]);
+  const calls = [];
+  const adapter = new OpenCodeAdapter({dbPath: custom, exec: (...args) => calls.push(args), hasCommand: () => true});
   assert.equal(adapter.sources[0].version, 2);
   assert.deepEqual(adapter.newSession.args, []);
   assert.equal(adapter.newSession.env.OPENCODE_DB, custom);
-  const session = adapter.normalize({id: 's1', title: 'V2', model: '{"providerID":"anthropic","id":"claude-sonnet-4"}'}, adapter.sources[0]);
+  const [session] = await adapter.sessions();
+  assert.equal(session.resume.command, 'opencode2');
   assert.equal(session.model, 'anthropic/claude-sonnet-4');
-  assert.equal(session.capabilities.rename, false);
-  assert.equal(session.capabilities.archive, false);
-  assert.equal(session.capabilities.move, false);
+  assert.equal(session.capabilities.rename, true);
+  assert.equal(session.capabilities.archive, true);
+  assert.equal(session.capabilities.move, true);
   assert.equal(session.capabilities.liveEvents, false);
-  await assert.rejects(adapter.rename(session, 'Rename'), /unavailable for OpenCode V2/);
-  await assert.rejects(adapter.archive(session), /unavailable for OpenCode V2/);
-  await assert.rejects(adapter.move(session, 'project'), /unavailable for OpenCode V2/);
+  await adapter.rename(session, 'Rename');
+  assert.deepEqual(calls[0][1], ['api', '--standalone', 'post', '/api/session/s1/rename', '--data', '{"title":"Rename"}']);
+  assert.equal(calls[0][2].env.OPENCODE_DB, custom);
+  const archived = await adapter.archive(session);
+  assert.ok(archived.backupPath);
+  assert.ok(execFileSync('sqlite3', [custom, "select time_archived from session_v2 where id='s1';"], {encoding: 'utf8'}).trim());
+  await adapter.restore(session);
+  assert.equal(execFileSync('sqlite3', [custom, "select coalesce(time_archived, 'restored') from session_v2 where id='s1';"], {encoding: 'utf8'}).trim(), 'restored');
+  await adapter.move(session, 'Target');
+  assert.deepEqual(calls[1][1], ['api', '--standalone', 'post', '/api/session/s1/move', '--data', '{"directory":"/tmp/project"}']);
+});
+
+test('OpenCode identifies a custom current V2 store by session_v2', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hsm-opencode-v2-schema-'));
+  const dbPath = path.join(dir, 'custom.db');
+  execFileSync('sqlite3', [dbPath, 'create table session_v2 (id text);']);
+  assert.deepEqual(openCodeSources(dbPath), [{dbPath, command: 'opencode2', version: 2}]);
 });
 
 test('OPENCODE_DB leaves an arbitrarily named database ambiguous and read-only', async () => {
