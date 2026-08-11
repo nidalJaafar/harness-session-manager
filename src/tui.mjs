@@ -295,7 +295,7 @@ export async function run(model) {
 export async function executeLaunch(request,{model,renderer,redraw=()=>{},spawnSyncFn=spawnSync,spawnFn=spawn,environment=process.env}={}) {
   if(request.method==='window'){
     const [terminal,...terminalArgs]=String(environment.TERMINAL||'xdg-terminal-exec').split(/\s+/);
-    const child=spawnFn(terminal,[...terminalArgs,request.command,...(request.args||[])],{cwd:request.cwd,detached:true,stdio:'ignore'});
+    const child=spawnFn(terminal,[...terminalArgs,request.command,...(request.args||[])],{cwd:request.cwd,env:{...environment,...request.env},detached:true,stdio:'ignore'});
     child.once?.('error',(error)=>{model.status=`Could not open new terminal: ${cleanError(error)}`;redraw();});
     child.unref?.();
     model.status=`Launched ${request.label||request.command} in a new terminal`;
@@ -304,7 +304,7 @@ export async function executeLaunch(request,{model,renderer,redraw=()=>{},spawnS
   const selectedKey=request.sessionKey||'';
   let result;
   renderer.suspend();
-  try { result=spawnSyncFn(request.command,request.args||[],{cwd:request.cwd,stdio:'inherit'}); }
+  try { result=spawnSyncFn(request.command,request.args||[],{cwd:request.cwd,env:{...environment,...request.env},stdio:'inherit'}); }
   finally { renderer.resume(); }
   await model.load();
   if(selectedKey){const index=model.rows().findIndex((row)=>row.session&&`${row.session.harness}:${row.session.id}`===selectedKey);if(index>=0)model.selectedSession=index;}

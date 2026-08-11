@@ -358,6 +358,7 @@ export class SessionHubModel {
         action(session.local?.snoozedUntil ? 'wake' : 'snooze', session.local?.snoozedUntil ? 'Wake session notifications' : 'Snooze notifications for one hour', true),
         action('alias', 'Set local alias', true), action('tag', 'Set session tag', true), action('note', 'Add local note', true),
         ...(session.capabilities?.rename ? [action('rename', 'Rename session', true)] : []),
+        ...(session.capabilities?.move ? [action('move', 'Move session to another project', true)] : []),
         ...(session.capabilities?.archive ? [action('archive', 'Archive session', true)] : []),
         action('hide', 'Hide session from HSM', true),
       ] : []),
@@ -393,17 +394,19 @@ export class SessionHubModel {
     if (this.promptKind === 'alias' || this.promptKind === 'note') { this.store.updateSession(sessionKey(session), {[this.promptKind]: value}); session.local[this.promptKind] = value; this.recordAction(session, `${this.promptKind}-updated`); this.status = `Saved local ${this.promptKind}`; return; }
     if (this.promptKind === 'tag') { if (session.capabilities?.tag && adapter.tag) { await adapter.tag(session, value); session.tag = value; } else { this.store.updateSession(sessionKey(session), {tag: value}); session.local.tag = value; } this.recordAction(session, 'tagged', value); this.status = `Tagged ${session.title} as ${value}`; return; }
     if (this.promptKind === 'rename') { await adapter.rename(session, value); this.store.recordUndo({type: 'rename', session: sessionKey(session), before: session.title, after: value}); this.recordAction(session, 'renamed', value); session.title = value; this.status = `Renamed to ${value}`; return; }
+    if (this.promptKind === 'move') { const before = session.projectId || session.project; await adapter.move(session, value); this.store.recordUndo({type: 'move', session: sessionKey(session), before, after: value, nativeSource: session.nativeSource}); this.recordAction(session, 'moved', value); this.status = `Moved ${session.title} to ${value}`; return this.load(); }
     if (this.promptKind === 'confirm') { if (value !== 'yes') { this.status = 'Action cancelled'; return; } await this.destructiveAction(this.pendingAction, session); }
   }
   async destructiveAction(kind, session) {
     if (kind === 'hide') { this.store.updateSession(sessionKey(session), {hidden: true}); this.store.recordUndo({type: 'hide', session: sessionKey(session)}); this.recordAction(session, 'hidden'); this.status = `Hidden ${session.title}`; return this.load(); }
     const adapter = this.adapters.find((item) => item.id === session.harness);
-    if (kind === 'archive') { const result = await adapter.archive(session); this.store.recordUndo({type: 'archive', session: sessionKey(session), backupPath: result.backupPath}); this.recordAction(session, 'archived'); this.status = `Archived ${session.title}`; return this.load(); }
+    if (kind === 'archive') { const result = await adapter.archive(session); this.store.recordUndo({type: 'archive', session: sessionKey(session), backupPath: result.backupPath, nativeSource: session.nativeSource}); this.recordAction(session, 'archived'); this.status = `Archived ${session.title}`; return this.load(); }
   }
   async undoLatest() {
     const undo = this.store.latestUndo(); if (!undo) { this.status = 'Nothing to undo'; return; }
     const [harness, id] = undo.session.split(':');
-    const session = this.sessions.find((item) => item.harness === harness && item.id === id) || {harness, id};
+    let session = this.sessions.find((item) => item.harness === harness && item.id === id) || {harness, id, nativeSource: undo.nativeSource};
+    if (['archive', 'move'].includes(undo.type) && undo.nativeSource) session = {...session, nativeSource: undo.nativeSource};
     const adapter = this.adapters.find((item) => item.id === harness);
     if (undo.type === 'archive' && adapter?.restore) await adapter.restore(session);
     else if (undo.type === 'rename' && adapter?.rename) await adapter.rename(session, undo.before);
@@ -417,7 +420,7 @@ export class SessionHubModel {
   openLauncher() { this.palette = false; this.launcher = true; this.launcherIndex = 0; this.status = 'Choose a harness for the new session'; }
   launcherKey(key) { const adapters = this.launchableAdapters(); if (key === 'esc' || key === 'ctrl+c') { this.launcher = false; return; } if (key === 'up' || key === 'k') this.launcherIndex = clamp(this.launcherIndex - 1, 0, Math.max(0, adapters.length - 1)); else if (key === 'down' || key === 'j') this.launcherIndex = clamp(this.launcherIndex + 1, 0, Math.max(0, adapters.length - 1)); else if (key === 'enter') { const adapter = adapters[this.launcherIndex]; if (!adapter) return; this.launcher = false; this.prompt = true; this.promptKind = 'new-session'; this.pendingAction = adapter.id; this.promptValue = this.defaultLaunchCwd(); } }
   defaultLaunchCwd() { const row = this.selectedRow(); if (row?.session?.cwd) return row.session.cwd; if (row?.type === 'folder' && row.key !== 'Unknown folder') return row.key; return process.cwd(); }
-  launchNewSession(harness, cwdValue) { const adapter = this.adapters.find((item) => item.id === harness); if (!adapter?.newSession) throw new Error(`Harness cannot create sessions: ${harness}`); const cwd = String(cwdValue || '').replace(/^~(?=\/|$)/, this.environment.HOME || ''); if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) { this.status = `Working directory does not exist: ${cwd}`; return; } const launch = adapter.newSession; this.pendingAction = null; return {type:'open',method:newSessionLaunchMethod(this.environment),command:launch.command,args:[...(launch.args||[])],cwd,label:adapter.name}; }
+  launchNewSession(harness, cwdValue) { const adapter = this.adapters.find((item) => item.id === harness); if (!adapter?.newSession) throw new Error(`Harness cannot create sessions: ${harness}`); const cwd = String(cwdValue || '').replace(/^~(?=\/|$)/, this.environment.HOME || ''); if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) { this.status = `Working directory does not exist: ${cwd}`; return; } const launch = adapter.newSession; this.pendingAction = null; return {type:'open',method:newSessionLaunchMethod(this.environment),command:launch.command,args:[...(launch.args||[])],...(launch.env?{env:launch.env}:{}),cwd,label:adapter.name}; }
   runLocalSearch() { this.searchMode='local';this.aiResults=[];this.searchResults = this.query ? this.index.search(this.query) : []; this.selectedSession = 0; this.scroll = 0; }
   async askAiToLocate() { if(!this.query){this.status='Enter a local search query first';return;}const preferred=this.store.getKv('ai_provider')||undefined,preview=this.rag.preview(this.query,{provider:preferred});this.status=`Asking ${preview.provider} to rank ${preview.candidateCount} redacted candidates…`;this.onStatus?.();const result=await this.rag.find(this.query,{provider:preview.provider});this.aiProvider=result.provider;this.aiResults=result.matches;this.searchMode='ai';this.selectedSession=0;this.scroll=0;this.status=result.matches.length?`${result.provider} found ${result.matches.length} evidence-backed matches`:(result.message||`${result.provider} found no supported match`); }
   async toggleAiSearch() { if(this.searchMode==='ai'){this.searchMode='local';this.selectedSession=0;this.scroll=0;this.status='Showing local search results';return;}return this.askAiToLocate(); }

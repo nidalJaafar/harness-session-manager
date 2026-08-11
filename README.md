@@ -93,6 +93,12 @@ Pressing `o` always resumes the selected session in the current terminal. HSM su
 
 Subagent and child threads are hidden by default. Press `s`, use the palette, set `HSM_SHOW_SUBAGENTS=1`, or pass `--show-subagents` to include them; the TUI preference is persisted.
 
+### OpenCode V1 and V2 support
+
+HSM reads both `~/.local/share/opencode/opencode.db` and the OpenCode 2 beta store at `~/.local/share/opencode/opencode-next.db`, deduplicating migrated sessions by their latest update. Sessions resume with their native `opencode` or `opencode2` executable, and new sessions prefer the newest available store. Set `OPENCODE_DB` or pass `--db` to use a custom database. HSM recognizes the current V2 `session_v2` projection; for an older custom filename whose generation remains ambiguous, also set `OPENCODE_VERSION=1|2`.
+
+OpenCode V1 and V2 use separate compatibility paths. Both support preview, resume, rename, archive/restore, and move. V2 rename and move go through `opencode2 api --standalone` so OpenCode owns the mutation and event flow. OpenCode V2 does not currently expose an archive endpoint, so HSM backs up the database and changes only its `time_archived` projection for archive/restore. An arbitrary unresolved custom store stays read-only until its version is explicit; `OPENCODE_DB` selects that store when HSM launches OpenCode.
+
 ### Codex support
 
 HSM discovers the newest local `$CODEX_HOME/state_*.sqlite` store and reads transcript previews from rollout JSONL files. Both Codex CLI and Codex Desktop threads appear as `[CX]`; spawned child threads follow the existing hidden-subagent preference. Resume uses `codex resume <thread-id>`, while `n` can launch a new `codex` session. Recent thread-scoped entries in the newest `$CODEX_HOME/logs_*.sqlite` provide exact live-running state without installing hooks or changing Codex configuration.
@@ -102,7 +108,7 @@ HSM discovers the newest local `$CODEX_HOME/state_*.sqlite` store and reads tran
 On the first interactive launch, HSM installs lifecycle integrations for detected harnesses:
 
 - Claude Code hooks for session start/end, prompts, tools, failures, notifications, and stop events.
-- An OpenCode plugin for session, idle, error, and tool events.
+- An OpenCode V1 plugin for session, idle, error, and tool events. OpenCode V2 currently uses process detection because its public plugin context does not expose lifecycle events.
 - A Pi extension for session and agent lifecycle events.
 
 HSM combines these events with process detection every two seconds. New sessions created while HSM is already open are discovered automatically. A missing process or heartbeat makes an active session stale instead of incorrectly marking it complete.
@@ -207,7 +213,7 @@ npm test
 npm start
 ```
 
-Doctor checks harness executables, Bun, SQLite and the OpenCode database, HSM database integrity/search backend, lifecycle integrations, the optional daemon, notifications, and process state.
+Doctor checks harness executables, Bun, SQLite and both OpenCode databases, HSM database integrity/search backend, lifecycle integrations, the optional daemon, notifications, and process state.
 
 ## CLI
 
